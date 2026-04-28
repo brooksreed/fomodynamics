@@ -37,10 +37,10 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        # No `--frozen`: this workflow runs against the extracted public
-        # repo (post `tools/sync_public_subtree.sh`), which does not ship
-        # `uv.lock`. uv resolves at install time.
-        run: uv sync
+        # `--extra dev` pulls in import-linter + pytest + pytest-xdist
+        # (declared under `[project.optional-dependencies].dev` in
+        # pyproject.toml). Without it, the next two steps cannot run.
+        run: uv sync --extra dev
 
       - name: Run import-linter
         run: uv run lint-imports
