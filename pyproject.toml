@@ -1,0 +1,124 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fomodynamics"
+version = "0.1.0a1"
+description = "Foiling Moth Dynamics — Python library for simulation, control, and analysis of foiling Moth sailboats and related 3D vehicles"
+# Plain `readme = "README.md"` works because Phase 7's sync script
+# (`tools/sync_public_subtree.sh`) renames `packaging/fmd/pyproject.toml`
+# to `pyproject.toml` at the staging-root and copies `README.md` next to
+# it. In the monorepo this file lives at `packaging/fmd/pyproject.toml`
+# while `README.md` is two levels up; setuptools refuses to read upward
+# `[file]` references but does not error on the field's *presence* when
+# the project is not actually being built (the root [build-system] is
+# deliberately broken — see root `pyproject.toml`). `uv sync` only
+# resolves deps and does not invoke the build backend, so this is safe.
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+authors = [{name = "Brooks Reed", email = "brooksr8@gmail.com"}]
+keywords = [
+    "simulation",
+    "dynamics",
+    "moth",
+    "sailing",
+    "hydrofoil",
+    "quaternion",
+    "NED",
+    "robotics",
+    "control",
+    "estimation",
+    "JAX",
+    "CasADi",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+
+# Core dependencies.
+#   - CasADi is REQUIRED — needed by trim_casadi.py (the moth trim solver
+#     consumed by moth_lqr.py) and by the cartpole OCP test suite.
+#   - scipy is REQUIRED — used module-level by simulator/{trim,lqr,
+#     linearize,moth_lqr}.py.
+#   - pandas is REQUIRED — used module-level by simulator/sweep.py
+#     (re-exported from `fmd.simulator`) and by analysis/cli.py (the four
+#     fmd-* console scripts).
+#   - matplotlib is REQUIRED — used module-level by analysis/cli.py and
+#     by simulator/closed_loop.py.
+dependencies = [
+    "numpy>=2.0",
+    "attrs>=23.0",
+    "jax>=0.4.20",
+    "equinox>=0.11.0",
+    "casadi>=3.6.5",
+    "scipy>=1.15",
+    "pandas>=2.3",
+    "matplotlib>=3.10",
+]
+
+[project.urls]
+Homepage = "https://github.com/brooksreed/fomodynamics"
+Repository = "https://github.com/brooksreed/fomodynamics"
+Issues = "https://github.com/brooksreed/fomodynamics/issues"
+
+[project.scripts]
+fmd-analyze = "fmd.analysis.cli:analyze_log"
+fmd-generate = "fmd.analysis.cli:generate_data"
+fmd-plot-vakaros = "fmd.analysis.cli:plot_vakaros"
+fmd-sampling = "fmd.analysis.cli:analyze_sampling_cli"
+
+[project.optional-dependencies]
+notebooks = [
+    "jupyter>=1.0",
+    "ipykernel>=6.0",
+    "ipywidgets>=8.0",
+]
+viz3d = [
+    "rerun-sdk>=0.22",
+]
+ml = [
+    "diffrax>=0.6.0",
+    "optax>=0.1.7",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-xdist>=3.0",
+    "import-linter>=2.0",
+]
+
+[tool.importlinter]
+root_packages = ["fmd"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "fmd must not import from blur_private"
+type = "forbidden"
+source_modules = ["fmd"]
+forbidden_modules = ["blur_private"]
+
+[[tool.importlinter.contracts]]
+name = "fmd must not import from blur"
+type = "forbidden"
+source_modules = ["fmd"]
+forbidden_modules = ["blur"]
+
+# setuptools knows how to map a package directory that lives outside the
+# project's pyproject directory via `package-dir` + `packages`. This works
+# because setuptools resolves package-dir paths relative to the pyproject
+# location, including upward `..` components — unlike hatchling.
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["fmd", "fmd.*"]
+namespaces = false

@@ -1,0 +1,53 @@
+name: CI
+
+# Public CI gate: lint + fast tests on every PR. Runs only against the
+# public package (`fomodynamics`); no `blur_private` dependencies are
+# installed. This workflow is what gets carried over to the public
+# `fomodynamics` repo at extraction (Phase 8).
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: lint + fast tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        # No `--frozen`: this workflow runs against the extracted public
+        # repo (post `tools/sync_public_subtree.sh`), which does not ship
+        # `uv.lock`. uv resolves at install time.
+        run: uv sync
+
+      - name: Run import-linter
+        run: uv run lint-imports
+
+      - name: Run fast tests
+        # Path is `tests/` (not `tests/fmd/`): in the extracted public
+        # repo, `tests/fmd/` is renamed to `tests/` by the sync script.
+        env:
+          JAX_PLATFORMS: cpu
+        run: uv run pytest tests -m "not slow" -p no:cacheprovider
