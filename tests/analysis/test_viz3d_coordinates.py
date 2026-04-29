@@ -1,4 +1,4 @@
-"""Tests for coordinate conversion between BLUR and Rerun frames."""
+"""Tests for coordinate conversion between fomodynamics and Rerun frames."""
 
 import numpy as np
 import pytest
@@ -8,7 +8,7 @@ from fmd.analysis.viz3d.coordinates import (
     frd_to_rerun,
     pitch_to_rerun_quat,
     moth_3dof_to_rerun_quat,
-    blur_quat_to_rerun,
+    fmd_quat_to_rerun,
 )
 
 
@@ -191,7 +191,7 @@ class TestSignConventionIntegration:
 
 
 class TestBlurQuatToRerun:
-    """Tests for BLUR quaternion to Rerun conversion with frame transformation.
+    """Tests for fomodynamics quaternion to Rerun conversion with frame transformation.
 
     The conversion applies a frame transformation (180° about [1,1,0]/√2)
     that maps FRD/NED axes to Rerun's Z-up frame:
@@ -201,9 +201,9 @@ class TestBlurQuatToRerun:
     """
 
     def test_identity_quaternion(self):
-        """BLUR identity [1, 0, 0, 0] -> Rerun identity [0, 0, 0, 1]."""
+        """fomodynamics identity [1, 0, 0, 0] -> Rerun identity [0, 0, 0, 1]."""
         blur = np.array([1.0, 0.0, 0.0, 0.0])
-        rerun = blur_quat_to_rerun(blur)
+        rerun = fmd_quat_to_rerun(blur)
         np.testing.assert_allclose(rerun, [0.0, 0.0, 0.0, 1.0])
 
     def test_x_rotation(self):
@@ -211,7 +211,7 @@ class TestBlurQuatToRerun:
         c = np.cos(np.pi / 4)
         s = np.sin(np.pi / 4)
         blur = np.array([c, s, 0.0, 0.0])
-        rerun = blur_quat_to_rerun(blur)
+        rerun = fmd_quat_to_rerun(blur)
         # FRD X -> Rerun Y, so rotation about X becomes rotation about Y
         np.testing.assert_allclose(rerun, [0.0, s, 0.0, c])
 
@@ -220,7 +220,7 @@ class TestBlurQuatToRerun:
         c = np.cos(np.pi / 4)
         s = np.sin(np.pi / 4)
         blur = np.array([c, 0.0, s, 0.0])
-        rerun = blur_quat_to_rerun(blur)
+        rerun = fmd_quat_to_rerun(blur)
         # FRD Y -> Rerun X, so rotation about Y becomes rotation about X
         np.testing.assert_allclose(rerun, [s, 0.0, 0.0, c])
 
@@ -229,14 +229,14 @@ class TestBlurQuatToRerun:
         c = np.cos(np.pi / 4)
         s = np.sin(np.pi / 4)
         blur = np.array([c, 0.0, 0.0, s])
-        rerun = blur_quat_to_rerun(blur)
+        rerun = fmd_quat_to_rerun(blur)
         # FRD Z -> Rerun -Z, so rotation about Z becomes rotation about -Z
         np.testing.assert_allclose(rerun, [0.0, 0.0, -s, c])
 
     def test_arbitrary_quaternion(self):
         """Test with arbitrary unit quaternion."""
         blur = np.array([0.5, 0.5, 0.5, 0.5])  # normalized
-        rerun = blur_quat_to_rerun(blur)
+        rerun = fmd_quat_to_rerun(blur)
         # Frame transformation swaps axes and negates Z component
         np.testing.assert_allclose(rerun, [0.5, 0.5, -0.5, 0.5])
 
@@ -246,7 +246,7 @@ class TestBlurQuatToRerun:
             [1.0, 0.0, 0.0, 0.0],  # identity
             [0.5, 0.5, 0.5, 0.5],  # arbitrary
         ])
-        rerun = blur_quat_to_rerun(blur)
+        rerun = fmd_quat_to_rerun(blur)
         assert rerun.shape == (2, 4)
         np.testing.assert_allclose(rerun[0], [0.0, 0.0, 0.0, 1.0])
         np.testing.assert_allclose(rerun[1], [0.5, 0.5, -0.5, 0.5])
@@ -254,14 +254,14 @@ class TestBlurQuatToRerun:
     def test_preserves_norm(self):
         """Conversion should preserve quaternion norm."""
         blur = np.array([0.7071, 0.7071, 0.0, 0.0])
-        rerun = blur_quat_to_rerun(blur)
+        rerun = fmd_quat_to_rerun(blur)
         np.testing.assert_allclose(np.linalg.norm(rerun), np.linalg.norm(blur), atol=1e-10)
 
     def test_batch_preserves_norms(self):
         """Batch conversion should preserve all norms."""
         blur = np.random.randn(10, 4)
         blur = blur / np.linalg.norm(blur, axis=1, keepdims=True)  # normalize
-        rerun = blur_quat_to_rerun(blur)
+        rerun = fmd_quat_to_rerun(blur)
         norms_blur = np.linalg.norm(blur, axis=1)
         norms_rerun = np.linalg.norm(rerun, axis=1)
         np.testing.assert_allclose(norms_rerun, norms_blur, atol=1e-10)

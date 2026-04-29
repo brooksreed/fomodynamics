@@ -358,9 +358,6 @@ def euler_step(
 
     x_{k+1} = x_k + dt * f(x_k, u_k, t)
 
-    This matches safe-control-gym's Physics.DYN mode integration,
-    which uses explicit forward Euler for dynamics.
-
     Args:
         system: JaxDynamicSystem instance
         state: Current state vector
@@ -377,7 +374,7 @@ def euler_step(
         Forward Euler is first-order accurate and conditionally stable.
         For RK4 stability, require dt < 2.785/|lambda_max|.
         For Euler stability, require dt < 2/|lambda_max| (stricter).
-        Use this for benchmarking against safe-control-gym, not production.
+        For production use, prefer simulate() which uses RK4.
     """
     deriv = system.forward_dynamics(state, control, t, env=env)
     new_state = state + dt * deriv
@@ -538,7 +535,6 @@ def simulate_euler(
     """Simulate a JAX dynamic system using fixed-step forward Euler.
 
     Uses jax.lax.scan for efficient JIT-compiled integration.
-    This matches safe-control-gym's Physics.DYN mode integration.
 
     Args:
         system: JaxDynamicSystem instance to simulate
@@ -557,14 +553,13 @@ def simulate_euler(
 
     Note:
         Forward Euler is first-order accurate and less stable than RK4.
-        Use this for validation against safe-control-gym benchmarks.
         For production use, prefer simulate() which uses RK4.
 
     Example:
         from fmd.simulator import Cartpole, simulate_euler
-        from fmd.simulator.params import CARTPOLE_SCG
+        from fmd.simulator.params import CARTPOLE_CLASSIC
 
-        cartpole = Cartpole(CARTPOLE_SCG)
+        cartpole = Cartpole(CARTPOLE_CLASSIC)
         initial = jnp.array([0.0, 0.0, 0.1, 0.0])
         result = simulate_euler(cartpole, initial, dt=0.02, duration=5.0)
     """
@@ -616,14 +611,11 @@ def simulate_euler_substepped(
     enforcement: Capability = Capability.HARD_CLIP,
     env=None,
 ) -> JaxSimulationResult:
-    """Simulate with substepped integration matching safe-control-gym.
+    """Simulate with substepped integration (split physics / control rates).
 
-    SCG uses different rates for physics simulation (typically 1000 Hz) and
-    control updates (typically 50 Hz). This function replicates that behavior
-    for exact comparison with SCG reference data.
-
-    The control is held constant during substeps (zero-order hold), and
-    results are sampled at the control rate for comparison.
+    Physics integration runs at ``dt_sim`` while the controller updates at
+    the slower ``dt_control``. The control is held constant during substeps
+    (zero-order hold), and results are sampled at the control rate.
 
     Args:
         system: JaxDynamicSystem instance to simulate
@@ -652,7 +644,7 @@ def simulate_euler_substepped(
         NOT the physics rate (dt_sim).
 
     Example:
-        # Match SCG's 1000 Hz simulation, 50 Hz control
+        # 1000 Hz physics, 50 Hz control
         result = simulate_euler_substepped(
             system, x0,
             dt_sim=0.001,     # 1ms physics
@@ -828,8 +820,7 @@ def semi_implicit_euler_step(
 
     Semi-implicit Euler updates velocity first using old position,
     then updates position using NEW velocity. This preserves the
-    symplectic structure of Hamiltonian systems and matches PyBullet's
-    integration scheme.
+    symplectic structure of Hamiltonian systems.
 
     Algorithm:
         v_new = v_old + dt * a(x_old, v_old)
@@ -889,8 +880,7 @@ def simulate_symplectic(
 
     Uses jax.lax.scan for efficient JIT-compiled integration.
     This integrator preserves the symplectic structure of Hamiltonian
-    systems, providing better energy conservation than explicit Euler
-    while matching PyBullet's integration scheme.
+    systems, providing better energy conservation than explicit Euler.
 
     Args:
         system: JaxDynamicSystem instance (must support symplectic integration)
@@ -979,19 +969,18 @@ def simulate_symplectic_substepped(
     enforcement: Capability = Capability.HARD_CLIP,
     env=None,
 ) -> JaxSimulationResult:
-    """Simulate with substepped symplectic integration matching SCG architecture.
+    """Simulate with substepped symplectic Euler (split physics / control rates).
 
-    This function combines semi-implicit (symplectic) Euler integration with
-    substepping, matching safe-control-gym's architecture where physics runs
-    at a fast rate (e.g., 1000 Hz) while control updates occur at a slower
-    rate (e.g., 50 Hz).
+    Combines semi-implicit (symplectic) Euler integration with substepping:
+    physics runs at the fast ``dt_sim`` rate while the controller updates at
+    the slower ``dt_control``.
 
-    The symplectic integrator preserves energy better than explicit Euler while
-    matching PyBullet's integration scheme. Combined with substepping, this
-    provides accurate physics simulation with realistic control timing.
+    The symplectic integrator preserves energy better than explicit Euler.
+    Combined with substepping, this provides accurate physics simulation with
+    realistic control timing.
 
     The control is held constant during substeps (zero-order hold), and
-    results are sampled at the control rate for comparison.
+    results are sampled at the control rate.
 
     Args:
         system: JaxDynamicSystem instance (must support symplectic integration)
@@ -1024,7 +1013,7 @@ def simulate_symplectic_substepped(
         NOT the physics rate (dt_sim).
 
     Example:
-        # Match SCG's 1000 Hz simulation, 50 Hz control with symplectic integration
+        # 1000 Hz physics, 50 Hz control with symplectic integration
         result = simulate_symplectic_substepped(
             system, x0,
             dt_sim=0.001,     # 1ms physics

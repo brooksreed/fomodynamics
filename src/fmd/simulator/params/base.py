@@ -1,4 +1,4 @@
-"""Base parameter infrastructure for BLUR simulator.
+"""Base parameter infrastructure for fomodynamics simulator.
 
 This module provides:
 - Environmental constants (gravity, density)

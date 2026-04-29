@@ -39,7 +39,7 @@ class ControlRateLimit(AbstractConstraint):
 
         Combined: -max_rate_down <= rate <= max_rate_up
 
-    Sign convention (matching all BLUR constraints):
+    Sign convention (matching all fomodynamics constraints):
         value <= 0: satisfied (rate within limits)
         value > 0: violated (rate exceeds limit)
 

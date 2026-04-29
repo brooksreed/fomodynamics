@@ -233,7 +233,7 @@ This guide is organized to build understanding progressively, from fundamentals 
 
 | Section | Time | What You Will Learn |
 |---------|------|---------------------|
-| [10_extending_blur.md](10_extending_blur.md) | 1 hr | Adding new models and components |
+| [10_extending_fomodynamics.md](10_extending_fomodynamics.md) | 1 hr | Adding new models and components |
 | [../../control_guide.md](../../control_guide.md) | 1 hr | LQR design, eigenvalue analysis, timestep selection |
 
 ### Suggested Reading Paths

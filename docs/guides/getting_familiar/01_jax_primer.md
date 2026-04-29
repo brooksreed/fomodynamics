@@ -1,6 +1,6 @@
-# JAX Primer for BLUR Users
+# JAX Primer for fomodynamics Users
 
-This section introduces the essential JAX concepts you need to understand BLUR's simulator. You don't need to be a JAX expert to use BLUR, but understanding these fundamentals will help you write efficient code and debug issues.
+This section introduces the essential JAX concepts you need to understand fomodynamics's simulator. You don't need to be a JAX expert to use fomodynamics, but understanding these fundamentals will help you write efficient code and debug issues.
 
 **Estimated reading time: 30 minutes**
 
@@ -8,14 +8,14 @@ This section introduces the essential JAX concepts you need to understand BLUR's
 
 ## Related Documentation
 
-For a deeper dive into JAX usage in BLUR's simulator, see:
+For a deeper dive into JAX usage in fomodynamics's simulator, see:
 - [JAX Simulator Guide](../../jax_simulator_guide.md) - Complete reference for simulation, control schedules, and Equinox modules
 
 ---
 
 ## Why JAX?
 
-BLUR uses JAX instead of plain NumPy for three key capabilities:
+fomodynamics uses JAX instead of plain NumPy for three key capabilities:
 
 1. **JIT Compilation**: Functions are compiled to optimized machine code, typically 10-100x faster than interpreted Python
 2. **Automatic Differentiation**: Compute exact gradients through simulations for sensitivity analysis, optimization, and control design
@@ -88,9 +88,9 @@ result2 = fast_function(x)
 - Subsequent calls with the same input shapes reuse the compiled version (fast)
 - Compilation is cached based on input shapes and dtypes
 
-### When BLUR uses JIT
+### When fomodynamics uses JIT
 
-BLUR's `simulate()` function is JIT-compatible. You can wrap simulation calls in `@jax.jit` for parameter sweeps:
+fomodynamics's `simulate()` function is JIT-compatible. You can wrap simulation calls in `@jax.jit` for parameter sweeps:
 
 ```python
 from fmd.simulator import SimplePendulum, simulate
@@ -137,7 +137,7 @@ batched_computation = jax.vmap(single_computation)
 results_vmap = batched_computation(inputs)
 ```
 
-**Why vmap matters for BLUR:**
+**Why vmap matters for fomodynamics:**
 
 You can run multiple simulations in parallel:
 
@@ -186,7 +186,7 @@ print(f"loss(3) = {loss(x)}")           # 9.0
 print(f"grad(3) = {grad_loss(x)}")       # 6.0
 ```
 
-**Why gradients matter for BLUR:**
+**Why gradients matter for fomodynamics:**
 
 Gradients enable optimization and sensitivity analysis through simulations:
 
@@ -216,16 +216,16 @@ This is how optimal control algorithms like iLQR compute control corrections.
 
 ---
 
-## BLUR-Specific Pattern: `jax.lax.scan`
+## fomodynamics-Specific Pattern: `jax.lax.scan`
 
-BLUR's simulator uses `jax.lax.scan` for efficient integration loops. This is JAX's way of writing compiled for-loops.
+fomodynamics's simulator uses `jax.lax.scan` for efficient integration loops. This is JAX's way of writing compiled for-loops.
 
 ### The Problem with Python Loops
 
 Python for-loops don't compile well:
 
 ```python
-# Conceptual Python version (not how BLUR works)
+# Conceptual Python version (not how fomodynamics works)
 def simulate_python_loop(initial_state, times, dt):
     states = [initial_state]
     state = initial_state
@@ -269,16 +269,16 @@ def scan_example():
     return outputs  # [1, 3, 6, 10, 15]
 ```
 
-### How BLUR Uses `scan`
+### How fomodynamics Uses `scan`
 
-Here's a simplified version of BLUR's integration loop:
+Here's a simplified version of fomodynamics's integration loop:
 
 ```python
 import jax
 import jax.numpy as jnp
 
 def simulate_with_scan(system, initial_state, times):
-    """Simplified version of BLUR's simulate() function."""
+    """Simplified version of fomodynamics's simulate() function."""
 
     def step_fn(carry, idx):
         """Single integration step."""
@@ -307,7 +307,7 @@ def simulate_with_scan(system, initial_state, times):
 - Enables gradient computation through the full trajectory
 - Works efficiently with `vmap` for batch simulations
 
-You don't need to write `scan` loops yourself to use BLUR, but understanding this pattern helps when reading BLUR's source code or writing custom integrators.
+You don't need to write `scan` loops yourself to use fomodynamics, but understanding this pattern helps when reading fomodynamics's source code or writing custom integrators.
 
 ---
 
@@ -406,9 +406,9 @@ jax.config.update("jax_disable_jit", False)
 
 ---
 
-## Float64 Precision in BLUR
+## Float64 Precision in fomodynamics
 
-BLUR uses 64-bit floating point by default for numerical accuracy in physics simulations. This is configured automatically when you import from `fmd.simulator`:
+fomodynamics uses 64-bit floating point by default for numerical accuracy in physics simulations. This is configured automatically when you import from `fmd.simulator`:
 
 ```python
 # This import enables float64 mode
@@ -418,7 +418,7 @@ import jax.numpy as jnp
 print(jnp.array(1.0).dtype)  # float64
 ```
 
-**Important:** If you import JAX before BLUR, you may get float32 precision:
+**Important:** If you import JAX before fomodynamics, you may get float32 precision:
 
 ```python
 # BAD order - may get float32
@@ -436,7 +436,7 @@ For more details on precision and GPU configuration, see [jax_simulator_guide.md
 
 ## Summary
 
-| Concept | Purpose | BLUR Usage |
+| Concept | Purpose | fomodynamics Usage |
 |---------|---------|------------|
 | `jax.numpy` | NumPy-like arrays for JAX | All array operations in simulator |
 | `jax.jit` | Compile functions for speed | Wrapping simulation calls |
@@ -455,7 +455,7 @@ For more details on precision and GPU configuration, see [jax_simulator_guide.md
 ## Next Steps
 
 Now that you understand JAX fundamentals, continue to:
-- [02 - Core Concepts](02_core_concepts.md) - Learn BLUR's coordinate frames and state conventions
+- [02 - Core Concepts](02_core_concepts.md) - Learn fomodynamics's coordinate frames and state conventions
 
 ---
 

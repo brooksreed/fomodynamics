@@ -1,6 +1,6 @@
 # Core Concepts
 
-This section introduces the foundational conventions and mathematical representations used throughout BLUR. Understanding these concepts is essential before working with any of the simulator models.
+This section introduces the foundational conventions and mathematical representations used throughout fomodynamics. Understanding these concepts is essential before working with any of the simulator models.
 
 **Estimated reading time: 1 hour**
 
@@ -28,7 +28,7 @@ This section introduces the foundational conventions and mathematical representa
 
 ## 1. Why These Conventions?
 
-BLUR uses aerospace-standard conventions for several reasons:
+fomodynamics uses aerospace-standard conventions for several reasons:
 
 1. **Consistency with literature:** Most flight dynamics textbooks and control papers use NED/FRD frames. This makes it easier to implement algorithms from published research.
 
@@ -36,7 +36,7 @@ BLUR uses aerospace-standard conventions for several reasons:
 
 3. **Numerical stability:** Quaternions avoid gimbal lock that plagues Euler angles at extreme pitch attitudes (common in acrobatic flight or hydrofoiling).
 
-4. **Interoperability:** SI units internally with conversions for display means data flows cleanly between BLUR packages and external tools.
+4. **Interoperability:** SI units internally with conversions for display means data flows cleanly between fomodynamics packages and external tools.
 
 These choices may feel unfamiliar if you come from robotics (which often uses z-up frames) or game development (which often uses different quaternion conventions). The [Frame Conventions](../../frame_conventions.md) document provides complete transform derivations for cross-library validation.
 
@@ -44,7 +44,7 @@ These choices may feel unfamiliar if you come from robotics (which often uses z-
 
 ## 2. Frame Conventions
 
-BLUR uses two primary coordinate frames:
+fomodynamics uses two primary coordinate frames:
 
 ### 2.1. World Frame: NED (North-East-Down)
 
@@ -121,17 +121,17 @@ Alternative conventions you may encounter:
 
 | System | World Frame | Body Frame | Example Users |
 |--------|-------------|------------|---------------|
-| BLUR | NED | FRD | Aerospace, marine |
-| Robotics | z-up | FLU | ROS, PyBullet, Drake |
+| fomodynamics | NED | FRD | Aerospace, marine |
+| Robotics | z-up | FLU | ROS, Drake |
 | OpenGL | y-up | varies | Game engines |
 
-The [Frame Conventions](../../frame_conventions.md) document provides complete transforms between BLUR and robotics conventions (NED/FRD to z-up/FLU), which are used in cross-library validation.
+See the [Frame Conventions](../../frame_conventions.md) document for the authoritative reference on fomodynamics's frames.
 
 ---
 
 ## 3. State Vectors
 
-BLUR's 6-DOF rigid body simulator uses a 13-element state vector:
+fomodynamics's 6-DOF rigid body simulator uses a 13-element state vector:
 
 ### 3.1. State Vector Structure
 
@@ -153,7 +153,7 @@ BLUR's 6-DOF rigid body simulator uses a 13-element state vector:
 
 ### 3.2. Why Body-Frame Velocities?
 
-BLUR stores linear velocity in the body frame (not world frame) because:
+fomodynamics stores linear velocity in the body frame (not world frame) because:
 
 1. **Forces are computed in body frame:** Lift, drag, thrust act along body axes
 2. **Simpler equations of motion:** No rotation matrix in the velocity dynamics
@@ -200,7 +200,7 @@ Euler angles are computed using ZYX convention (yaw-pitch-roll sequence).
 
 ### 4.1. Why Quaternions?
 
-BLUR uses quaternions instead of Euler angles for attitude representation:
+fomodynamics uses quaternions instead of Euler angles for attitude representation:
 
 | Issue | Euler Angles | Quaternions |
 |-------|--------------|-------------|
@@ -217,7 +217,7 @@ BLUR uses quaternions instead of Euler angles for attitude representation:
 
 ### 4.2. Scalar-First Convention
 
-BLUR uses **scalar-first** quaternion ordering: `q = [qw, qx, qy, qz]`
+fomodynamics uses **scalar-first** quaternion ordering: `q = [qw, qx, qy, qz]`
 
 | Component | Name | Interpretation |
 |-----------|------|----------------|
@@ -236,10 +236,10 @@ q_identity = [1, 0, 0, 0]  # qw=1, qx=qy=qz=0
 
 | Library | Order | Notes |
 |---------|-------|-------|
-| BLUR | [w, x, y, z] | Scalar-first (aerospace standard) |
-| PyBullet | [x, y, z, w] | Scalar-last |
+| fomodynamics | [w, x, y, z] | Scalar-first (aerospace standard) |
 | ROS | [x, y, z, w] | Scalar-last |
 | Eigen (C++) | [x, y, z, w] | Scalar-last (internal storage) |
+| Most game engines | [x, y, z, w] | Scalar-last |
 
 ### 4.3. Core Quaternion Operations
 
@@ -618,7 +618,7 @@ Heading error to due east: 45.0 deg
 
 ## Summary
 
-| Concept | BLUR Convention | Key Point |
+| Concept | fomodynamics Convention | Key Point |
 |---------|----------------|-----------|
 | World frame | NED (North-East-Down) | +D is down, altitude = -pos_d |
 | Body frame | FRD (Forward-Right-Down) | Forces computed here |

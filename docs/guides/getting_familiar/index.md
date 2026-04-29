@@ -1,6 +1,6 @@
-# Getting Familiar with BLUR
+# Getting Familiar with fomodynamics
 
-Welcome to the Getting Familiar guide for BLUR (Brooks Reed's Library for Unified Robotics). This index helps you navigate the guide sections based on your goals and interests.
+Welcome to the Getting Familiar guide for **fomodynamics** (Foiling Moth Dynamics). This index helps you navigate the guide sections based on your goals and interests.
 
 ---
 
@@ -10,15 +10,15 @@ Welcome to the Getting Familiar guide for BLUR (Brooks Reed's Library for Unifie
 
 | Section | Title | Time | Description |
 |---------|-------|------|-------------|
-| [00](00_introduction.md) | Introduction | 30 min | BLUR overview, goals, prerequisites, installation, and guide roadmap |
-| [01](01_jax_primer.md) | JAX Primer | 30 min | Essential JAX concepts for BLUR users: JIT compilation, pytrees, and functional patterns |
+| [00](00_introduction.md) | Introduction | 30 min | fomodynamics overview, goals, prerequisites, installation, and guide roadmap |
+| [01](01_jax_primer.md) | JAX Primer | 30 min | Essential JAX concepts for fomodynamics users: JIT compilation, pytrees, and functional patterns |
 | [02](02_core_concepts.md) | Core Concepts | 1 hr | NED frame conventions, quaternion attitude representation, SI units, and state vector layout |
 
 ### Model Tutorials
 
 | Section | Title | Time | Description |
 |---------|-------|------|-------------|
-| [03](03_simple_pendulum.md) | Simple Pendulum | 30 min | Your first BLUR simulation with the simplest model |
+| [03](03_simple_pendulum.md) | Simple Pendulum | 30 min | Your first fomodynamics simulation with the simplest model |
 | [04](04_cartpole.md) | Cartpole | 1 hr | A 4-state coupled system introducing control challenges |
 | [06](06_planar_quadrotor.md) | Planar Quadrotor | 1 hr | 2D flight dynamics with thrust and torque control |
 
@@ -26,7 +26,7 @@ Welcome to the Getting Familiar guide for BLUR (Brooks Reed's Library for Unifie
 
 | Section | Title | Time | Description |
 |---------|-------|------|-------------|
-| [10](10_extending_blur.md) | Extending BLUR | 1 hr | Adding new dynamic models and force elements |
+| [10](10_extending_fomodynamics.md) | Extending fomodynamics | 1 hr | Adding new dynamic models and force elements |
 
 ---
 
@@ -50,7 +50,7 @@ Start here if you want to get simulations running quickly.
 
 ### "I want to understand controls"
 
-Start here if you want to design controllers for BLUR systems.
+Start here if you want to design controllers for fomodynamics systems.
 
 1. [00 - Introduction](00_introduction.md) - Setup and orientation
 2. [02 - Core Concepts](02_core_concepts.md) - State vectors and dynamics foundations
@@ -62,20 +62,20 @@ Start here if you want to design controllers for BLUR systems.
 
 ### "I want to add new physics"
 
-Start here if you want to extend BLUR with custom models or force elements.
+Start here if you want to extend fomodynamics with custom models or force elements.
 
 1. [00 - Introduction](00_introduction.md) - Setup and orientation
 2. [02 - Core Concepts](02_core_concepts.md) - Conventions your model must follow
 3. [03 - Simple Pendulum](03_simple_pendulum.md) - See how a minimal model is structured
-4. [10 - Extending BLUR](10_extending_blur.md) - Create your own models and components
+4. [10 - Extending fomodynamics](10_extending_fomodynamics.md) - Create your own models and components
 
 **Estimated time: 3 hours**
 
 ### "I want to trust the results"
 
-Start here if you need to validate BLUR against other tools or verify correctness.
+Start here if you need to validate fomodynamics against other tools or verify correctness.
 
-1. [02 - Core Concepts](02_core_concepts.md) - Understand what BLUR is computing
+1. [02 - Core Concepts](02_core_concepts.md) - Understand what fomodynamics is computing
 2. [dev/testing.md](../../../dev/testing.md) - Testing philosophy, tolerance tiers, and cross-validation
 3. Model sections for physics derivations:
    - [03 - Simple Pendulum](03_simple_pendulum.md) - Analytical solutions
@@ -93,7 +93,7 @@ Before starting this guide, you should have:
 - Python 3.10+ installed
 - Basic familiarity with NumPy array operations
 - Understanding of differential equations (conceptual level)
-- BLUR installed per the [README](../../../../README.md)
+- fomodynamics installed per the [README](../../../../README.md)
 
 No prior JAX experience is required; section 01 covers what you need.
 

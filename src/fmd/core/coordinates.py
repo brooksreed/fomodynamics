@@ -1,6 +1,6 @@
 """NED coordinate frame definitions and conventions.
 
-This module defines the coordinate frame conventions used throughout BLUR.
+This module defines the coordinate frame conventions used throughout fomodynamics.
 
 NED Frame (North-East-Down):
     - X/North: Points north (positive northward)

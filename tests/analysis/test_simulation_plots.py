@@ -49,9 +49,9 @@ def sample_controls(sample_times):
 
 class TestImports:
     def test_import_style(self):
-        from fmd.analysis.plots import BLUR_STYLE, apply_blur_style, style_axis, get_colors, savefig_and_close
-        assert isinstance(BLUR_STYLE, dict)
-        assert callable(apply_blur_style)
+        from fmd.analysis.plots import FMD_STYLE, apply_fmd_style, style_axis, get_colors, savefig_and_close
+        assert isinstance(FMD_STYLE, dict)
+        assert callable(apply_fmd_style)
         assert callable(style_axis)
         assert callable(get_colors)
         assert callable(savefig_and_close)
@@ -115,9 +115,9 @@ class TestStyle:
         colors = get_colors(15)
         assert len(colors) == 15
 
-    def test_apply_blur_style(self):
-        from fmd.analysis.plots import apply_blur_style
-        with apply_blur_style():
+    def test_apply_fmd_style(self):
+        from fmd.analysis.plots import apply_fmd_style
+        with apply_fmd_style():
             assert plt.rcParams["grid.alpha"] == 0.3
 
     def test_style_axis(self):

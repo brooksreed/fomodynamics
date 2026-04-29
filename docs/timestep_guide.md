@@ -1,6 +1,6 @@
-# BLUR Timestep Guide
+# fomodynamics Timestep Guide
 
-This document covers timestep selection, RK4 stability, and the timestep architecture across BLUR's Moth 3DOF simulation and control stack.
+This document covers timestep selection, RK4 stability, and the timestep architecture across fomodynamics's Moth 3DOF simulation and control stack.
 
 **Related Documentation:**
 - [control_guide.md](control_guide.md) - LQR design, integrator selection, tuning

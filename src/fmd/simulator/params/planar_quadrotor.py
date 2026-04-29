@@ -45,7 +45,6 @@ class PlanarQuadrotorParams:
         g: Gravitational acceleration (m/s^2). Must be positive.
 
     References:
-        Safe Control Gym (UTIAS): https://github.com/utiasDSL/safe-control-gym
         Crazyflie 2.1: https://www.bitcraze.io/products/crazyflie-2-1/
 
     Example:

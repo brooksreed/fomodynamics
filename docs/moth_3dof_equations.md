@@ -1,6 +1,6 @@
 # Moth 3DOF Equations of Motion
 
-This document is the living reference for the Moth 3DOF longitudinal dynamics model implemented in BLUR. It covers coordinate frames, state/control definitions, equations of motion, force components, the ventilation model, and trim/equilibrium conditions.
+This document is the living reference for the Moth 3DOF longitudinal dynamics model implemented in fomodynamics. It covers coordinate frames, state/control definitions, equations of motion, force components, the ventilation model, and trim/equilibrium conditions.
 
 When this document and implementation disagree, treat implementation as source of truth and update this file.
 

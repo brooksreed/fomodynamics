@@ -13,7 +13,7 @@ This document provides comprehensive guidance for LQR controller design, integra
 
 ### 1.1 Basic Usage
 
-BLUR provides LQR (Linear Quadratic Regulator) controllers for stabilization and trajectory tracking. The control law is:
+fomodynamics provides LQR (Linear Quadratic Regulator) controllers for stabilization and trajectory tracking. The control law is:
 
 ```
 u = u_ref - K @ (x - x_ref)
@@ -74,7 +74,7 @@ The Q/R weight ratio determines closed-loop response speed. Larger Q or smaller 
 
 ### 1.3 Continuous vs Discrete LQR
 
-BLUR supports both continuous-time and discrete-time LQR design:
+fomodynamics supports both continuous-time and discrete-time LQR design:
 
 ```python
 # Continuous-time LQR (default)
@@ -198,7 +198,7 @@ result = simulate(cartpole, x0, dt=0.01, duration=5.0, control=controller)
 
 ## 3. Integrator Selection
 
-BLUR provides multiple integrators for different use cases:
+fomodynamics provides multiple integrators for different use cases:
 
 | Integrator | Function | Order | Accuracy | Use When |
 |------------|----------|-------|----------|----------|
@@ -268,7 +268,6 @@ x_new = x_old + dt * v_new             # Use NEW velocity for position
 **Characteristics:**
 - Preserves symplectic structure (Hamiltonian systems)
 - Energy oscillates around true value rather than drifting
-- Matches PyBullet's integration scheme
 - Good for long simulations of conservative systems (pendulums, orbital mechanics)
 
 **Note:** System must define `position_indices` and `velocity_indices` properties.
@@ -386,7 +385,7 @@ Low     |    * Simplest, least accurate
    - Check for zero denominators in state derivative
 
 2. **Quaternion denormalization:**
-   - BLUR auto-normalizes, but extreme dt can break this
+   - fomodynamics auto-normalizes, but extreme dt can break this
    - Reduce timestep significantly
 
 3. **Extreme control values:**

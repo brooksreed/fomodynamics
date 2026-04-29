@@ -1,1 +1,1 @@
-"""BLUR test suite."""
+"""fomodynamics test suite."""

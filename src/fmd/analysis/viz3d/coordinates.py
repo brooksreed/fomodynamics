@@ -1,8 +1,8 @@
-"""Frame coordinate conversions between BLUR and Rerun display.
+"""Frame coordinate conversions between fomodynamics and Rerun display.
 
 Frame conventions:
-    BLUR body (FRD): +X forward, +Y starboard, +Z down (right-handed)
-    BLUR world (NED): +X north, +Y east, +Z down (right-handed)
+    Body (FRD): +X forward, +Y starboard, +Z down (right-handed)
+    World (NED): +X north, +Y east, +Z down (right-handed)
     Rerun display:    +X east, +Y north, +Z up (right-handed, Z-up)
 
 Mapping:
@@ -10,7 +10,7 @@ Mapping:
     FRD [x_fwd, y_stbd, z_down] -> Rerun [y_stbd, x_fwd, -z_down]
 
 Quaternion convention mismatch:
-    BLUR: scalar-first (qw, qx, qy, qz)
+    scalar-first (qw, qx, qy, qz)
     Rerun: xyzw format (qx, qy, qz, qw)
 """
 
@@ -98,8 +98,8 @@ def moth_3dof_to_rerun_quat(
 ) -> NDArray:
     """Convert Moth pitch + heel to Rerun xyzw quaternion.
 
-    Builds a BLUR quaternion (scalar-first) from pitch and heel, then
-    converts via ``blur_quat_to_rerun`` to Rerun xyzw format.
+    Builds a fomodynamics quaternion (FRD body -> NED world) (scalar-first) from pitch and heel, then
+    converts via ``fmd_quat_to_rerun`` to Rerun xyzw format.
 
     In FRD body frame (Hamilton convention — rightmost rotation applied first):
         q_pitch = rotation about +Y (starboard) by theta
@@ -135,7 +135,7 @@ def moth_3dof_to_rerun_quat(
     # Hamilton convention: q_total = q_pitch ⊗ q_heel applies heel first, then pitch
     q_total = _quat_multiply(q_pitch, q_heel)
 
-    return blur_quat_to_rerun(q_total)
+    return fmd_quat_to_rerun(q_total)
 
 
 def _quat_multiply(q1: NDArray, q2: NDArray) -> NDArray:
@@ -166,10 +166,10 @@ _Q_FRAME = np.array([0.0, _SQRT2_INV, _SQRT2_INV, 0.0])
 _Q_FRAME_INV = np.array([0.0, -_SQRT2_INV, -_SQRT2_INV, 0.0])  # conjugate
 
 
-def blur_quat_to_rerun(quat: NDArray) -> NDArray:
-    """Convert BLUR quaternion to Rerun quaternion with frame transformation.
+def fmd_quat_to_rerun(quat: NDArray) -> NDArray:
+    """Convert fomodynamics quaternion (FRD body -> NED world) to Rerun quaternion with frame transformation.
 
-    BLUR quaternions represent rotation from body (FRD) to world (NED).
+    fomodynamics quaternion (FRD body -> NED world)s represent rotation from body (FRD) to world (NED).
     Rerun uses a Z-up world frame. This function:
     1. Conjugates the quaternion by the frame transformation
        (Hamilton convention: q_rerun = q_frame ⊗ q_blur ⊗ q_frame⁻¹,
@@ -180,7 +180,7 @@ def blur_quat_to_rerun(quat: NDArray) -> NDArray:
     maps NED axes to Rerun axes: N→Y, E→X, D→-Z.
 
     Args:
-        quat: Quaternion(s) in BLUR format [qw,qx,qy,qz]. Shape (4,) or (N, 4).
+        quat: Quaternion(s) in scalar-first format [qw,qx,qy,qz]. Shape (4,) or (N, 4).
 
     Returns:
         Quaternion(s) in Rerun xyzw format. Same shape.

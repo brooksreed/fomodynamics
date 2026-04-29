@@ -1,4 +1,4 @@
-"""Constraint system for BLUR optimization and control.
+"""Constraint system for fomodynamics optimization and control.
 
 This module provides constraint abstractions for:
 - Optimization (iLQR, gradient descent) via relaxation functions

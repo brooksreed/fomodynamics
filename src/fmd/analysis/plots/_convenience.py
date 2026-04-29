@@ -15,7 +15,7 @@ from fmd.analysis.plots._simulation import (
     covariance_diagonal,
     control_effort,
 )
-from fmd.analysis.plots._style import BLUR_STYLE, savefig_and_close
+from fmd.analysis.plots._style import FMD_STYLE, savefig_and_close
 
 # ---------------------------------------------------------------------------
 # Moth 3DOF display constants
@@ -114,7 +114,7 @@ def plot_lqg_result(result, *, save_dir=None):
     # -----------------------------------------------------------------------
     # Figure 1: Foiling Dashboard (7 vertical subplots)
     # -----------------------------------------------------------------------
-    with plt.rc_context(BLUR_STYLE):
+    with plt.rc_context(FMD_STYLE):
         fig_foil, axes_f = plt.subplots(7, 1, figsize=(12, 16), sharex=True)
 
         # 1. Heights (m above water)
@@ -234,7 +234,7 @@ def plot_lqg_result(result, *, save_dir=None):
     # -----------------------------------------------------------------------
     # Figure 2: Estimation Dashboard (8 vertical subplots)
     # -----------------------------------------------------------------------
-    with plt.rc_context(BLUR_STYLE):
+    with plt.rc_context(FMD_STYLE):
         fig_est, axes_e = plt.subplots(8, 1, figsize=(12, 18), sharex=True)
 
         # State display config: (index, label, is_angle)

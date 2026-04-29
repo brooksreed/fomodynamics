@@ -1,6 +1,6 @@
 # Testing Approach
 
-This document describes the overall testing philosophy and structure for the BLUR codebase.
+This document describes the overall testing philosophy and structure for the fomodynamics codebase.
 
 ## Philosophy
 
@@ -97,7 +97,7 @@ See [`notebooks/TESTING.md`](../notebooks/TESTING.md) for notebook-specific docu
 **Key points**:
 - Notebooks 05 (JIT performance) and 06 (autodiff sensitivity) are **excluded from smoke tests** due to expensive timing/optimization loops
 - Session-scoped caching: notebooks execute once per session, results reused
-- Per-notebook timeouts configurable via `BLUR_NOTEBOOK_TIMEOUT` env var
+- Per-notebook timeouts configurable via `FMD_NOTEBOOK_TIMEOUT` env var
 
 **Configuration** (from [`test_notebooks.py`](https://github.com/brooksreed/blur/blob/main/tests/test_notebooks.py)):
 

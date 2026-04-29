@@ -24,7 +24,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from fmd.analysis.viz3d._rerun_check import require_rerun
-from fmd.analysis.viz3d.coordinates import ned_to_rerun, frd_to_rerun, blur_quat_to_rerun
+from fmd.analysis.viz3d.coordinates import ned_to_rerun, frd_to_rerun, fmd_quat_to_rerun
 from fmd.simulator.integrator import SimulationResult
 
 # RigidBody6DOF state indices
@@ -154,7 +154,7 @@ def write_rrd(
     quaternions_blur = states[:, _QW:_QZ + 1]  # (N, 4)
 
     positions_rerun = ned_to_rerun(positions_ned)  # (N, 3)
-    quaternions_rerun = blur_quat_to_rerun(quaternions_blur)  # (N, 4)
+    quaternions_rerun = fmd_quat_to_rerun(quaternions_blur)  # (N, 4)
 
     # --- Position trail ---
     rr.log(

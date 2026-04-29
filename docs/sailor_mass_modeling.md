@@ -6,9 +6,9 @@ For background, see [moth_modeling.md](moth_modeling.md) (inertia tensor section
 
 ---
 
-## 0. Coordinate Frames, Reference Points, and What BLUR Assumes
+## 0. Coordinate Frames, Reference Points, and What fomodynamics Assumes
 
-BLUR’s Moth model uses:
+fomodynamics’s Moth model uses:
 
 - **Axes:** body frame is FRD (Forward-Right-Down): \(+x\) forward, \(+y\) starboard, \(+z\) down.
 - **Pitch convention:** \(\theta > 0\) is **nose-up**, and \(M_y > 0\) is a **nose-up** pitch moment.
@@ -26,7 +26,7 @@ In the current implementation:
 
 So the model is implicitly trying to be a **CG-referenced** dynamics model, but is currently being supplied **hull-CG-referenced** lever arms. When the sailor shifts the system CG, this mismatch can completely erase trim/dynamics sensitivity.
 
-This document’s “Option A” fix below (write dynamics about the system CG) matches the force-component architecture BLUR already has.
+This document’s “Option A” fix below (write dynamics about the system CG) matches the force-component architecture fomodynamics already has.
 
 ---
 
@@ -396,7 +396,7 @@ where \(\dot{x}_{cg} = \frac{m_s}{m}\dot{x}_s\) and \(\dot{z}_{cg} = \frac{m_s}{
 - Limited positions may miss important configurations
 - Doesn't naturally extend to 6DOF (hiking angle is continuous)
 
-**Verdict:** Viable but less flexible than Option 2. Better suited for game-like simulations or real-time applications where lookup speed matters. Not recommended for BLUR's JAX/optimization focus.
+**Verdict:** Viable but less flexible than Option 2. Better suited for game-like simulations or real-time applications where lookup speed matters. Not recommended for fomodynamics's JAX/optimization focus.
 
 ### 4.4 Option 4: Sailor Position as State Variable
 

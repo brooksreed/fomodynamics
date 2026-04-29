@@ -1,4 +1,4 @@
-"""Unified plotting system for BLUR.
+"""Unified plotting system for fomodynamics.
 
 Three-layer architecture:
 
@@ -37,8 +37,8 @@ from fmd.analysis.plots._datastream import (
 
 # --- Style ---
 from fmd.analysis.plots._style import (
-    BLUR_STYLE,
-    apply_blur_style,
+    FMD_STYLE,
+    apply_fmd_style,
     style_axis,
     get_colors,
     savefig_and_close,
@@ -94,8 +94,8 @@ __all__ = [
     "_get_display_info",
     "_autosize_figure_to_screen",
     # Style
-    "BLUR_STYLE",
-    "apply_blur_style",
+    "FMD_STYLE",
+    "apply_fmd_style",
     "style_axis",
     "get_colors",
     "savefig_and_close",

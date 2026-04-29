@@ -128,8 +128,9 @@ robotics or graphics backgrounds. Common bug sources:
 - **Angles are in radians internally.** Convert to degrees only for
   display / human-readable output.
 - **Quaternion is scalar-first** `[qw, qx, qy, qz]` — *not* the
-  `[qx, qy, qz, qw]` order used by ROS, Eigen, or most game engines. Use
-  `pybullet_quat_to_blur_quat()` (and friends) when bridging.
+  `[qx, qy, qz, qw]` order used by ROS, Eigen, or most game engines.
+  When bridging, reorder explicitly: `q_fmd = [q_other[3], q_other[0],
+  q_other[1], q_other[2]]`.
 - **Use circular-aware ops for angles**: `fmd.core.operations.circular_subtract`,
   `circular_mean`, `wrap_angle` — naïve subtraction breaks at the
   ±π wrap point.

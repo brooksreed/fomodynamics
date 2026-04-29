@@ -196,7 +196,7 @@ is_feas = constraints.is_feasible(t, x, u, tol=1e-6)
 
 ## Coordinate Conventions
 
-BLUR uses **NED (North-East-Down)** coordinates:
+fomodynamics uses **NED (North-East-Down)** coordinates:
 - `pos_n, pos_e, pos_d` at state indices 0, 1, 2 (for RigidBody6DOF)
 - **+D is DOWN**: altitude increase means `pos_d` decreases
 - Water surface at `pos_d = 0` means "above water" is `pos_d <= 0`

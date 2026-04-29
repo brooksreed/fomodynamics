@@ -1,10 +1,10 @@
-"""Shared matplotlib style helpers for BLUR plots."""
+"""Shared matplotlib style helpers for fomodynamics plots."""
 
 from contextlib import contextmanager
 
 import matplotlib.pyplot as plt
 
-BLUR_STYLE = {
+FMD_STYLE = {
     "grid.alpha": 0.3,
     "figure.dpi": 150,
     "lines.linewidth": 1.0,
@@ -12,9 +12,9 @@ BLUR_STYLE = {
 
 
 @contextmanager
-def apply_blur_style():
-    """Context manager that applies BLUR's default rcParams."""
-    with plt.rc_context(BLUR_STYLE):
+def apply_fmd_style():
+    """Context manager that applies fomodynamics's default rcParams."""
+    with plt.rc_context(FMD_STYLE):
         yield
 
 

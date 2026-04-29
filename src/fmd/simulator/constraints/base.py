@@ -1,4 +1,4 @@
-"""Core constraint abstractions for BLUR.
+"""Core constraint abstractions for fomodynamics.
 
 This module defines the base interfaces for constraints used in
 optimization and control. Constraints represent inequalities g(t,x,u) <= 0.

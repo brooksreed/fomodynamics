@@ -21,7 +21,7 @@ Use this when time is tight. If any answer is "no" or "unsure," do not trust the
 
 - Prevent high-confidence wrong conclusions in physics/modeling work.
 - Provide fast sanity checks before and after code changes.
-- Standardize how we debug and validate dynamic behavior in BLUR.
+- Standardize how we debug and validate dynamic behavior in fomodynamics.
 
 ## Non-Negotiable Mindset
 
@@ -36,13 +36,13 @@ Use this when time is tight. If any answer is "no" or "unsure," do not trust the
 1. Canonical implementation used in production paths.
 2. Independent derivation or known analytical identity.
 3. Focused tests that would fail if the hypothesis is wrong.
-4. Cross-implementation parity checks (for BLUR: JAX vs CasADi).
+4. Cross-implementation parity checks (for fomodynamics: JAX vs CasADi).
 5. Diagnostic scripts and plots.
 6. Reports/scratchpads/handoffs/retros.
 
 When levels disagree, trust higher levels first and investigate why.
 
-## BLUR Physical Invariants and Core Conventions
+## fomodynamics Physical Invariants and Core Conventions
 
 - Units are SI internally (`m`, `s`, `rad`, `N`).
 - Coordinate frame is NED (`+D` means down).
@@ -87,7 +87,7 @@ If behavior looks weird, check conventions before touching parameters.
 
 When debugging, write these explicitly in notes/tests before interpreting numbers.
 
-### BLUR frame quick map
+### fomodynamics frame quick map
 
 - **World frame (NED)**: `x=N`, `y=E`, `z=D`.
 - **Body frame (FRD)**: `x=Forward`, `y=Right/Starboard`, `z=Down`.
@@ -175,7 +175,7 @@ Do not skip to L5 and declare success.
 - If a result depends on optimizer convergence, report residuals and possible local-minimum sensitivity.
 - If a metric drifts slowly, test whether drift comes from residual trim imbalance vs true instability.
 
-## BLUR-Specific Pitfalls Seen Repeatedly
+## fomodynamics-Specific Pitfalls Seen Repeatedly
 
 - NED sign confusion for `pos_d` and height-above-water interpretations.
 - Mixing raw geometry with CG-adjusted geometry in diagnostics/tests.
@@ -184,7 +184,7 @@ Do not skip to L5 and declare success.
 - Interpreting fixed-speed (`surge_disabled`) behavior as if surge coupling were active.
 - Declaring monotonic relationships globally when only locally verified.
 
-## Practical BLUR Debug/Validation Workflow
+## Practical fomodynamics Debug/Validation Workflow
 
 Use this sequence for Moth/dynamics work:
 
@@ -239,7 +239,7 @@ If two internal docs disagree:
 - ASME V&V 20 family (VVUQ standards context):
   - https://www.asme.org/codes-standards/find-codes-standards/standard-for-verification-and-validation-in-computational-fluid-dynamics-and-heat-transfer
 
-## Appendix: BLUR Case Patterns to Reuse
+## Appendix: fomodynamics Case Patterns to Reuse
 
 These are patterns to emulate, not absolute truths.
 

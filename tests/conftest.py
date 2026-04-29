@@ -1,4 +1,4 @@
-"""Root pytest configuration for BLUR tests.
+"""Root pytest configuration for fomodynamics tests.
 
 This module:
 1. Configures JAX with GPU auto-detection and memory management
@@ -169,7 +169,7 @@ class _NoopArtifactSaver:
 def artifact_saver(request):
     """Fixture providing an ArtifactSaver instance.
 
-    Activated by --save-artifacts flag or BLUR_SAVE_ARTIFACTS=1 env var.
+    Activated by --save-artifacts flag or FMD_SAVE_ARTIFACTS=1 env var.
 
     Note: ArtifactSaver lives in tests.private.validation (it's part of the
     private validation reporting infrastructure). Importing it lazily here
@@ -179,7 +179,7 @@ def artifact_saver(request):
     import os
 
     active = request.config.getoption("--save-artifacts") or os.environ.get(
-        "BLUR_SAVE_ARTIFACTS", ""
+        "FMD_SAVE_ARTIFACTS", ""
     ) == "1"
     test_file = request.fspath.purebasename  # e.g. "test_moth_estimation"
 

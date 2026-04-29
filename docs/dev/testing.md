@@ -1,6 +1,6 @@
 # Testing Reference
 
-Practical commands, tiers, and JAX memory management for running BLUR tests.
+Practical commands, tiers, and JAX memory management for running fomodynamics tests.
 
 **Related docs:**
 - [../overall_testing_approach.md](../overall_testing_approach.md) — testing philosophy and structure
@@ -128,7 +128,7 @@ JAX JIT compilation can consume significant memory, especially with slow-marked 
 
 ### GPU Support
 
-BLUR auto-detects GPU when CUDA-enabled JAX is installed. Install separately via `bash cuda-setup.sh` or `uv pip install "jax[cuda12]"`. GPU memory is auto-limited to 65% (important on WSL where GPU also drives display).
+fomodynamics auto-detects GPU when CUDA-enabled JAX is installed. Install separately via `bash cuda-setup.sh` or `uv pip install "jax[cuda12]"`. GPU memory is auto-limited to 65% (important on WSL where GPU also drives display).
 
 ### Configuration
 
@@ -141,7 +141,7 @@ Use `FMD_DTYPE` / `FMD_NP_DTYPE` from `fmd.core` for consistent dtype across the
 
 ### Running Tests
 
-**Default to CPU for tests** — CPU is typically faster than GPU for BLUR's problem sizes:
+**Default to CPU for tests** — CPU is typically faster than GPU for fomodynamics's problem sizes:
 ```bash
 env JAX_PLATFORMS=cpu uv run pytest tests/control/ -v --forked
 ```

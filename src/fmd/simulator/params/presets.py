@@ -179,28 +179,6 @@ Properties:
     - Linearized period: ~2.01 s (slower, easier to balance)
 """
 
-CARTPOLE_SCG = CartpoleParams(
-    mass_cart=1.0,
-    mass_pole=0.1,
-    pole_length=0.5,
-    g=9.8,  # Note: safe-control-gym uses 9.8, not standard 9.80665
-)
-"""Cartpole parameters matching safe-control-gym.
-
-Parameters sourced from safe-control-gym for validation/benchmarking:
-https://github.com/utiasDSL/safe-control-gym/blob/main/safe_control_gym/envs/gym_control/cartpole.py
-
-Key difference from CARTPOLE_CLASSIC:
-    - Uses g=9.8 instead of standard gravity (9.80665)
-    - This matches the value used in safe-control-gym and OpenAI Gym
-
-Properties:
-    - Total mass: 1.1 kg
-    - Mass ratio: 0.091
-    - Linearized period: ~1.43 s (slightly different due to g=9.8)
-"""
-
-
 # ============================================================================
 # PlanarQuadrotor Presets
 # ============================================================================
@@ -247,33 +225,6 @@ Properties:
     - Hover thrust per rotor: ~9.8 N
     - Slower pitch response due to higher inertia
 """
-
-PLANAR_QUAD_SCG = PlanarQuadrotorParams(
-    mass=0.027,
-    arm_length=0.0397,
-    inertia_pitch=1.4e-5,
-    g=9.8,  # Note: safe-control-gym uses 9.8, not standard 9.80665
-)
-"""Planar quadrotor parameters matching safe-control-gym.
-
-Parameters sourced from safe-control-gym for validation/benchmarking:
-https://github.com/utiasDSL/safe-control-gym/blob/main/safe_control_gym/envs/gym_control/quadrotor.py
-
-Based on Crazyflie 2.1 nano quadcopter, but with g=9.8 for benchmark compatibility.
-
-Key differences from PLANAR_QUAD_CRAZYFLIE:
-    - Mass is 0.027 kg (vs 0.030 in CRAZYFLIE preset)
-    - Uses g=9.8 instead of standard gravity (9.80665)
-
-Note: safe-control-gym may use different coordinate conventions and
-a sqrt(2) factor in the moment equation. Verify coordinate conventions
-when interfacing with external tools.
-
-Properties:
-    - Hover thrust per rotor: ~0.132 N
-    - Very low inertia enables fast pitch response
-"""
-
 
 # ============================================================================
 # Moth Sailboat Presets

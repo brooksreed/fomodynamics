@@ -22,7 +22,6 @@ The planar quadrotor is a 6-state, 2-control system that models a quadrotor cons
 - Understanding fundamental flight dynamics before tackling 3D
 - Control algorithm development and testing
 - Visualization and debugging
-- Validation against benchmark environments (Safe Control Gym, PyBullet)
 
 **Why study 2D before 3D?** The planar quadrotor eliminates roll and yaw dynamics, quaternion attitude representation, and 3D Coriolis terms. This allows you to focus on the essential physics: thrust produces acceleration, differential thrust produces rotation, and gravity pulls down.
 
@@ -99,7 +98,7 @@ where:
 
 ### Using Parameter Presets
 
-BLUR provides several preset configurations:
+fomodynamics provides several preset configurations:
 
 ```python
 from fmd.simulator import PlanarQuadrotor
@@ -107,7 +106,6 @@ from fmd.simulator.params import (
     PLANAR_QUAD_TEST_DEFAULT,  # 1kg, easy calculations
     PLANAR_QUAD_CRAZYFLIE,     # Crazyflie nano quadcopter
     PLANAR_QUAD_HEAVY,         # 2kg photography drone
-    PLANAR_QUAD_SCG,           # Safe Control Gym compatible
 )
 
 # Create quadrotor with test parameters
@@ -126,7 +124,6 @@ print(f"Gravity: {quad.g} m/s^2")
 | `PLANAR_QUAD_TEST_DEFAULT` | 1.0 | 0.25 | 0.01 | Testing, easy mental math |
 | `PLANAR_QUAD_CRAZYFLIE` | 0.030 | 0.0397 | 1.4e-5 | Crazyflie validation |
 | `PLANAR_QUAD_HEAVY` | 2.0 | 0.30 | 0.04 | Stress testing |
-| `PLANAR_QUAD_SCG` | 0.027 | 0.0397 | 1.4e-5 | Safe Control Gym parity |
 
 ### Custom Parameters
 
@@ -451,8 +448,6 @@ print(f"Angle of attack: {jnp.degrees(alpha):.2f} degrees")
 4. **Energy analysis:** Kinetic + potential energy; conserved in freefall
 
 5. **Power balance:** Thrust power = F dot v; gravity power = -mg*z_dot
-
-6. **Validation:** Matches Safe Control Gym and PyBullet within established tolerances
 
 ---
 

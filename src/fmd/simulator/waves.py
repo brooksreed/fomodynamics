@@ -1,4 +1,4 @@
-"""Ocean wave field model for BLUR simulator.
+"""Ocean wave field model for fomodynamics simulator.
 
 Provides a JIT-compatible WaveField Equinox module that evaluates
 superposed linear (Airy) wave components at arbitrary (x, y, z, t).

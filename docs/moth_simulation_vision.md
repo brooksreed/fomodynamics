@@ -253,9 +253,9 @@ Moths sail upwind with significant **windward heel** (like a windsurfer):
 
 ---
 
-## Relationship to BLUR Architecture
+## Relationship to fomodynamics Architecture
 
-This model will build on existing BLUR infrastructure:
+This model will build on existing fomodynamics infrastructure:
 
 - **Base class:** Extend `RigidBody6DOF` for 13-state quaternion dynamics
 - **Components:** Create `JaxForceElement` subclasses for sail, foil, rudder forces

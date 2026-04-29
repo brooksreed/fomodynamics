@@ -2,7 +2,7 @@
 
 **Estimated reading time: 30 minutes**
 
-The simple pendulum is the most basic dynamic system in BLUR. With only 2 states, it provides an ideal introduction to BLUR's simulation workflow while still demonstrating important concepts like energy conservation and period validation.
+The simple pendulum is the most basic dynamic system in fomodynamics. With only 2 states, it provides an ideal introduction to fomodynamics's simulation workflow while still demonstrating important concepts like energy conservation and period validation.
 
 ---
 
@@ -55,7 +55,7 @@ For a 1-meter pendulum: $T \approx 2.006$ seconds.
 
 ### Using Parameter Presets
 
-BLUR provides ready-to-use pendulum configurations:
+fomodynamics provides ready-to-use pendulum configurations:
 
 ```python
 from fmd.simulator import SimplePendulum, simulate
@@ -193,7 +193,7 @@ The first term is kinetic energy; the second is potential energy (zero at the bo
 
 ### Why Start Here?
 
-The simple pendulum demonstrates BLUR fundamentals without added complexity:
+The simple pendulum demonstrates fomodynamics fundamentals without added complexity:
 
 1. **Minimal state**: Only 2 states to track
 2. **No control inputs**: Pure physics, no control design needed

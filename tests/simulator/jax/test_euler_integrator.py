@@ -1,8 +1,4 @@
-"""Tests for Euler integrator.
-
-Validates the forward Euler integration implementation that matches
-safe-control-gym's Physics.DYN mode.
-"""
+"""Tests for Euler integrator."""
 
 from __future__ import annotations
 
@@ -14,7 +10,6 @@ import pytest
 from fmd.simulator import (
     SimplePendulum,
     Cartpole,
-    PlanarQuadrotor,
     euler_step,
     rk4_step,
     simulate,
@@ -23,8 +18,7 @@ from fmd.simulator import (
 )
 from fmd.simulator.params import (
     PENDULUM_1M,
-    CARTPOLE_SCG,
-    PLANAR_QUAD_SCG,
+    CARTPOLE_CLASSIC,
 )
 
 
@@ -127,8 +121,8 @@ class TestSimulateEuler:
 
     @pytest.fixture
     def cartpole(self) -> Cartpole:
-        """Cartpole with SCG parameters."""
-        return Cartpole(CARTPOLE_SCG)
+        """Classic cartpole."""
+        return Cartpole(CARTPOLE_CLASSIC)
 
     def test_basic_simulation(self, pendulum: SimplePendulum) -> None:
         """simulate_euler produces valid trajectory."""
@@ -250,89 +244,3 @@ class TestSimulateEuler:
         assert result.times[-1] == pytest.approx(duration, abs=dt)
 
 
-class TestEulerForBenchmarkValidation:
-    """Tests specifically for benchmark validation use cases."""
-
-    @pytest.fixture
-    def cartpole(self) -> Cartpole:
-        """Cartpole with SCG parameters."""
-        return Cartpole(CARTPOLE_SCG)
-
-    @pytest.fixture
-    def planar_quad(self) -> PlanarQuadrotor:
-        """PlanarQuadrotor with SCG parameters."""
-        return PlanarQuadrotor(PLANAR_QUAD_SCG)
-
-    def test_cartpole_scg_timestep(self, cartpole: Cartpole) -> None:
-        """Test with SCG default timestep (20ms)."""
-        initial = jnp.array([0.0, 0.0, 0.1, 0.0])
-        dt = 0.02  # SCG default
-        duration = 2.0
-
-        result = simulate_euler(cartpole, initial, dt=dt, duration=duration)
-
-        # Should complete without error
-        assert result.states.shape[0] > 0
-        assert jnp.isfinite(result.states).all()
-
-    def test_quadrotor_scg_timestep(self, planar_quad: PlanarQuadrotor) -> None:
-        """Test with SCG-compatible timestep for quadrotor."""
-        # Hover state
-        hover_thrust = PLANAR_QUAD_SCG.hover_thrust_per_rotor
-        initial = jnp.array([0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
-        control = ConstantControl(jnp.array([hover_thrust, hover_thrust]))
-        dt = 0.01  # 10ms (conservative for stability)
-        duration = 1.0
-
-        result = simulate_euler(
-            planar_quad, initial, dt=dt, duration=duration, control=control
-        )
-
-        # Should hover in place (z stays at 1.0)
-        np.testing.assert_allclose(
-            result.states[-1, 1], 1.0, atol=0.1,
-            err_msg="Quadrotor should maintain hover altitude"
-        )
-
-    def test_euler_discretization_matches(self, cartpole: Cartpole) -> None:
-        """Euler integration should match Ad = I + A*dt, Bd = B*dt.
-
-        This is the discrete-time model that SCG uses.
-        """
-        from fmd.simulator import linearize
-        from fmd.simulator.linearize import discretize_euler as disc_euler
-
-        x_eq = jnp.zeros(4)
-        u_eq = jnp.zeros(1)
-        dt = 0.02
-
-        # Get linearization
-        A, B = linearize(cartpole, x_eq, u_eq)
-
-        # Euler discretization
-        Ad, Bd = disc_euler(A, B, dt)
-
-        # Check formula: Ad = I + A*dt
-        Ad_expected = jnp.eye(4) + A * dt
-        np.testing.assert_allclose(Ad, Ad_expected, rtol=1e-10)
-
-        # Check formula: Bd = B*dt
-        Bd_expected = B * dt
-        np.testing.assert_allclose(Bd, Bd_expected, rtol=1e-10)
-
-    def test_open_loop_trajectory_deterministic(self, cartpole: Cartpole) -> None:
-        """Same initial state and control should produce same trajectory."""
-        initial = jnp.array([0.0, 0.0, 0.1, 0.0])
-        control = ConstantControl(jnp.array([0.0]))
-        dt = 0.02
-        duration = 2.0
-
-        result1 = simulate_euler(
-            cartpole, initial, dt=dt, duration=duration, control=control
-        )
-        result2 = simulate_euler(
-            cartpole, initial, dt=dt, duration=duration, control=control
-        )
-
-        np.testing.assert_allclose(result1.states, result2.states, rtol=1e-14)
-        np.testing.assert_allclose(result1.times, result2.times, rtol=1e-14)

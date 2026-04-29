@@ -162,7 +162,6 @@ custom_cartpole = Cartpole(params)
 | `CARTPOLE_CLASSIC` | 1.0 | 0.1 | 0.5 | OpenAI Gym standard |
 | `CARTPOLE_HEAVY_POLE` | 1.0 | 0.5 | 0.5 | Harder to balance |
 | `CARTPOLE_LONG_POLE` | 1.0 | 0.1 | 1.0 | Easier to balance |
-| `CARTPOLE_SCG` | 1.0 | 0.1 | 0.5 | safe-control-gym (g=9.8) |
 
 **Note on pole length:** The `pole_length` parameter is the **half-length** to the center of mass. The full pole length is `2 * pole_length`.
 
@@ -340,7 +339,7 @@ print(f"Relative drift: {relative_drift:.2e}")
 
 ## OpenAI Gym Equivalence
 
-BLUR's Cartpole implementation matches the OpenAI Gym equations exactly. This enables direct validation and comparison with RL environments.
+The fomodynamics Cartpole implementation matches the OpenAI Gym equations exactly. This enables direct validation and comparison with RL environments.
 
 ### Equation Equivalence
 
@@ -354,7 +353,7 @@ The Gym implementation uses the same Barto-Sutton-Anderson formulation:
 # x_acc = temp - polemass_length * theta_acc * cos(theta) / total_mass
 ```
 
-BLUR uses algebraic rearrangement for numerical stability but produces identical results.
+fomodynamics uses algebraic rearrangement for numerical stability but produces identical results.
 
 ### Golden Value Verification
 

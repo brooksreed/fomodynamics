@@ -1,6 +1,6 @@
 # JAX Simulator User Guide
 
-This guide explains the JAX-based simulator in BLUR, including how to use it effectively and understand its JAX-specific features.
+This guide explains the JAX-based simulator in fomodynamics, including how to use it effectively and understand its JAX-specific features.
 
 **Related documentation:**
 - [Simulator Architecture](simulator_architecture.md) - Core architecture, state vectors, equations of motion
@@ -26,7 +26,7 @@ print(f"Final angle: {result.states[-1, 0]:.4f} rad")
 
 ## Why JAX?
 
-The BLUR simulator uses JAX for three key capabilities:
+The fomodynamics simulator uses JAX for three key capabilities:
 
 1. **JIT Compilation**: Simulations are compiled to optimized machine code, typically 10-100x faster than pure Python
 2. **Automatic Differentiation**: Compute gradients through simulations for sensitivity analysis, optimization, and control
@@ -174,7 +174,7 @@ jacobian = jax.jacobian(trajectory_loss)(jnp.array([0.3, 0.0]))
 
 ## Equinox Modules
 
-BLUR uses [Equinox](https://docs.kidger.site/equinox/) for JAX-compatible classes.
+fomodynamics uses [Equinox](https://docs.kidger.site/equinox/) for JAX-compatible classes.
 
 ### What Are Equinox Modules?
 
@@ -257,7 +257,7 @@ result = simulate(boat, initial, control=my_control)  # Won't work with JIT
 
 ### Using Control Classes
 
-BLUR provides Equinox-based control classes:
+fomodynamics provides Equinox-based control classes:
 
 ```python
 from fmd.simulator import ConstantControl, PiecewiseConstantControl
@@ -304,7 +304,7 @@ class SinusoidalControl(ControlSchedule):
 
 ### Why Float64?
 
-BLUR enforces 64-bit floating point for numerical accuracy in physics simulations. This is critical for:
+fomodynamics enforces 64-bit floating point for numerical accuracy in physics simulations. This is critical for:
 
 - Long simulations where errors accumulate
 - Gradient computation through many timesteps
@@ -312,7 +312,7 @@ BLUR enforces 64-bit floating point for numerical accuracy in physics simulation
 
 ### Import Order
 
-BLUR automatically enables float64 mode when you import `fmd.simulator`. However, if you import JAX first, you may get float32:
+fomodynamics automatically enables float64 mode when you import `fmd.simulator`. However, if you import JAX first, you may get float32:
 
 ```python
 # GOOD - import fmd.simulator first
@@ -348,7 +348,7 @@ import jax.numpy as jnp
 
 ## FP32 / Mixed-Precision Policy
 
-BLUR defaults to float64 for maximum numerical accuracy. However, float32 can provide
+fomodynamics defaults to float64 for maximum numerical accuracy. However, float32 can provide
 significant speedups -- especially on GPU, where consumer hardware (e.g., RTX 4070 SUPER)
 has ~32x more FP32 than FP64 compute throughput.
 

@@ -1,4 +1,4 @@
-"""3D visualization for BLUR simulations using Rerun.
+"""3D visualization for fomodynamics simulations using Rerun.
 
 Requires: rerun-sdk (included in default `uv sync`)
 

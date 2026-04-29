@@ -12,16 +12,15 @@ When using these trajectories with LQR controllers, be aware of numerical
 stability constraints. Aggressive LQR tuning on small vehicles can create
 very fast closed-loop dynamics that require small simulation timesteps.
 
-See the ``blur.simulator.lqr`` module docstring for tuning guidance and
-``scripts/analyze_lqr_stability.py`` for detailed stability analysis.
+See the ``fmd.simulator.lqr`` module docstring for tuning guidance.
 
 Example:
     from fmd.simulator import PlanarQuadrotor, simulate
     from fmd.simulator.trajectories import circle_trajectory_2d
     from fmd.simulator.lqr import TrajectoryLQRController
-    from fmd.simulator.params import PLANAR_QUAD_SCG
+    from fmd.simulator.params import PLANAR_QUAD_CRAZYFLIE
 
-    quad = PlanarQuadrotor(PLANAR_QUAD_SCG)
+    quad = PlanarQuadrotor(PLANAR_QUAD_CRAZYFLIE)
 
     # Generate circular trajectory
     times, x_refs, u_refs = circle_trajectory_2d(
@@ -29,7 +28,7 @@ Example:
         period=5.0,
         center=(0.0, 1.0),
         num_points=100,
-        hover_thrust=PLANAR_QUAD_SCG.hover_thrust_per_rotor,
+        hover_thrust=PLANAR_QUAD_CRAZYFLIE.hover_thrust_per_rotor,
     )
 
     # Create controller (use conservative R for dt=10ms stability)

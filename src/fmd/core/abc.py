@@ -1,6 +1,6 @@
-"""Abstract base classes for BLUR packages.
+"""Abstract base classes for fomodynamics packages.
 
-This module defines the core abstractions used across BLUR packages.
+This module defines the core abstractions used across fomodynamics packages.
 Implementations should avoid if/else on array values for compatibility
 with autodiff frameworks (JAX, CasADi).
 

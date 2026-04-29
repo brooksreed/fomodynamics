@@ -19,7 +19,7 @@ Plotting system architecture and Rerun 3D visualization.
 
 Additional modules:
 - `_datastream.py`: Original `plot_time_series`/`plot_polar` for DataStream/DataFrame
-- `_style.py`: Shared style (`BLUR_STYLE`, `style_axis`, `get_colors`, `savefig_and_close`)
+- `_style.py`: Shared style (`FMD_STYLE`, `style_axis`, `get_colors`, `savefig_and_close`)
 - `_windowing.py`: Adaptive axis windowing for sweep/divergence plots
 
 **Key constants** for Moth 3DOF: `MOTH_3DOF_STATE_LABELS`, `MOTH_3DOF_STATE_TRANSFORMS`, `MOTH_3DOF_CONTROL_LABELS`, `MOTH_3DOF_CONTROL_TRANSFORMS`.
@@ -32,12 +32,12 @@ The `fmd.analysis.viz3d` module provides Rerun-based 3D visualization (included 
 
 ### Frame Conventions
 
-BLUR and Rerun use different coordinate systems that require transformation:
+fomodynamics and Rerun use different coordinate systems that require transformation:
 
 | Frame | X | Y | Z | Handedness |
 |-------|---|---|---|------------|
-| BLUR Body (FRD) | Forward | Starboard (Right) | Down | Right-handed |
-| BLUR World (NED) | North | East | Down | Right-handed |
+| fomodynamics Body (FRD) | Forward | Starboard (Right) | Down | Right-handed |
+| fomodynamics World (NED) | North | East | Down | Right-handed |
 | Rerun Display | East | North | Up | Right-handed, Z-up |
 
 **Transformation (NED/FRD → Rerun):**
@@ -48,11 +48,11 @@ BLUR and Rerun use different coordinate systems that require transformation:
 **Key functions in `fmd.analysis.viz3d.coordinates`:**
 - `ned_to_rerun(pos)` — Transform positions: [N,E,D] → [E,N,-D]
 - `frd_to_rerun(vec)` — Transform body vectors: [F,R,D] → [R,F,-D]
-- `blur_quat_to_rerun(quat)` — Transform quaternions with frame conjugation
+- `fmd_quat_to_rerun(quat)` — Transform quaternions with frame conjugation
 
 ### Quaternion Transformation
 
-BLUR quaternions represent rotation from body (FRD) to world (NED). For Rerun visualization, the quaternion must be conjugated by the frame transformation:
+fomodynamics quaternions represent rotation from body (FRD) to world (NED). For Rerun visualization, the quaternion must be conjugated by the frame transformation:
 
 ```python
 q_rerun = q_frame ⊗ q_blur ⊗ q_frame⁻¹

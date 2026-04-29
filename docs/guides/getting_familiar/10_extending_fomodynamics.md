@@ -1,8 +1,8 @@
-# Extending BLUR
+# Extending fomodynamics
 
 **Estimated reading time: 1 hour**
 
-This guide covers how to extend BLUR with new force components, dynamic models, and parameter classes. BLUR uses a modular architecture where force elements are composable, models inherit from base classes, and parameters are immutable with validation.
+This guide covers how to extend fomodynamics with new force components, dynamic models, and parameter classes. fomodynamics uses a modular architecture where force elements are composable, models inherit from base classes, and parameters are immutable with validation.
 
 ---
 
@@ -17,7 +17,7 @@ This guide covers how to extend BLUR with new force components, dynamic models, 
 
 ## Extension Architecture
 
-BLUR provides three main extension points:
+fomodynamics provides three main extension points:
 
 | Extension Point | Base Class | Purpose |
 |-----------------|------------|---------|
@@ -345,11 +345,11 @@ class QuadrotorJax(RigidBody6DOFJax):
 
 ## Parameter Classes
 
-BLUR uses `attrs` frozen classes for model parameters, providing immutability and validation at construction time.
+fomodynamics uses `attrs` frozen classes for model parameters, providing immutability and validation at construction time.
 
 ### Base Validators
 
-BLUR provides standard validators in `fmd.simulator.params.base`:
+fomodynamics provides standard validators in `fmd.simulator.params.base`:
 
 ```python
 # Scalar validators
@@ -937,7 +937,7 @@ When adding new components or models, verify:
 
 ## Summary
 
-BLUR's extension architecture centers on three patterns:
+fomodynamics's extension architecture centers on three patterns:
 
 1. **Force Elements** (`JaxForceElement`) - Modular force/moment computations that compose into 6-DOF models
 

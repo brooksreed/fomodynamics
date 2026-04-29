@@ -1,4 +1,4 @@
-"""Environment module for BLUR simulator.
+"""Environment module for fomodynamics simulator.
 
 Bundles environmental conditions (waves, future: wind, current)
 into a single Equinox module that can be threaded through the
