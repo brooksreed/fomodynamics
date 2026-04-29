@@ -1,19 +1,19 @@
-# Introduction to BLUR
+# Introduction to fomodynamics
 
 **Estimated reading time: 30 minutes**
 
 **Related Documentation:**
 - [README](../../../../README.md) - Quick start and installation
-- [CLAUDE.md](../../../../CLAUDE.md) - Development guide and project overview
+- [README — Core conventions](../../../../README.md#core-conventions) - Frames, units, quaternions
 - [Moth Simulation Vision](../../moth_simulation_vision.md) - Long-term project vision
 
 ---
 
-## What is BLUR?
+## What is fomodynamics?
 
-**BLUR** (**B**rooks Reed's **L**ibrary for **U**nified **R**obotics) is a Python library for control and estimation of 3D vehicles, with a focus on hydrofoiling sail and power boats. It combines physics simulation with telemetry analysis, providing a unified environment for developing and validating control algorithms.
+**fomodynamics** (import name `fmd`) is a Python library for control and estimation of 3D vehicles, with a focus on hydrofoiling sail and power boats. It combines physics simulation with telemetry analysis, providing a unified environment for developing and validating control algorithms.
 
-BLUR is built on [JAX](https://jax.readthedocs.io/), giving it automatic differentiation, just-in-time compilation, and GPU acceleration out of the box. This makes it well-suited for both classical optimization approaches (like Model Predictive Control) and learning-based methods (like Reinforcement Learning).
+`fomodynamics` is built on [JAX](https://jax.readthedocs.io/), giving it automatic differentiation, just-in-time compilation, and GPU acceleration out of the box. This makes it well-suited for both classical optimization approaches (like Model Predictive Control) and learning-based methods (like Reinforcement Learning).
 
 ### Key Capabilities
 
@@ -27,7 +27,7 @@ BLUR is built on [JAX](https://jax.readthedocs.io/), giving it automatic differe
 
 ### Design Principles
 
-BLUR follows several core design principles that inform its architecture:
+`fomodynamics` follows several core design principles that inform its architecture:
 
 1. **SI Units Internally** - All data is stored in SI units (meters, radians, m/s). Conversions to display units (knots, degrees) happen only at presentation time.
 
@@ -43,18 +43,18 @@ BLUR follows several core design principles that inform its architecture:
 
 ## Target Use Cases
 
-BLUR is designed for several interconnected use cases:
+`fomodynamics` is designed for several interconnected use cases:
 
 ### Control Prototyping
 
-Design and test control algorithms in simulation before deploying to hardware. BLUR supports:
+Design and test control algorithms in simulation before deploying to hardware. `fomodynamics` supports:
 - Discrete LQR for linearized stabilization
 - Direct multiple-shooting OCP (via CasADi + IPOPT) for trajectory optimization
 - EKF / Kalman estimation for state estimation
 
 ### Hydrofoiling Boats
 
-The primary application driving BLUR's development is simulating hydrofoiling Moths (high-performance sailing dinghies). This involves:
+The primary application driving `fomodynamics`'s development is simulating hydrofoiling Moths (high-performance sailing dinghies). This involves:
 - Modeling foil hydrodynamics with lift/drag curves
 - Ride height control through flap actuation
 - Balancing sail forces against foil forces
@@ -63,14 +63,14 @@ See the [Moth Simulation Vision](../../moth_simulation_vision.md) for the full r
 
 ### Learning Algorithms
 
-BLUR's JAX foundation makes it suitable for reinforcement learning research:
+`fomodynamics`'s JAX foundation makes it suitable for reinforcement learning research:
 - Gradients through dynamics enable policy gradient methods
 - Fast JIT-compiled rollouts for sample efficiency
 - Vectorized simulation with `jax.vmap` for parallel environments
 
 ### Data Analysis
 
-Beyond simulation, BLUR includes tools for analyzing real telemetry:
+Beyond simulation, `fomodynamics` includes tools for analyzing real telemetry:
 - Schema-based data loading for multiple formats
 - Circular-aware filtering and statistics
 - Comparison between simulated and recorded data
@@ -100,14 +100,14 @@ If you are unfamiliar with JAX, start with the [JAX Primer](01_jax_primer.md) se
 
 ## Installation
 
-BLUR uses [uv](https://docs.astral.sh/uv/) for package management. The recommended setup is WSL2 Ubuntu 24.04 for Windows users.
+`fomodynamics` uses [uv](https://docs.astral.sh/uv/) for package management. The recommended setup is WSL2 Ubuntu 24.04 for Windows users.
 
 ### Quick Start
 
 ```bash
 # Clone the repository
-git clone https://github.com/brooksreed/blur.git
-cd blur
+git clone https://github.com/brooksreed/fomodynamics.git
+cd fomodynamics
 
 # Install all dependencies
 uv sync
@@ -126,10 +126,10 @@ uv sync --no-group optimization  # skip CasADi
 
 ### GPU Support (Optional)
 
-BLUR automatically detects and uses GPU when available. GPU support requires separate installation:
+`fomodynamics` automatically detects and uses GPU when available. GPU support requires separate installation:
 
 ```bash
-# Install BLUR first
+# Install `fomodynamics` first
 uv sync
 
 # Then enable GPU support (requires NVIDIA GPU with drivers)
@@ -140,7 +140,7 @@ uv run python -c "import jax; print(jax.devices())"
 # Should show: [CudaDevice(id=0)]
 ```
 
-See [CLAUDE.md](../../../../CLAUDE.md) for detailed GPU configuration and memory management.
+See [jax_simulator_guide.md](../../jax_simulator_guide.md) for detailed GPU configuration and memory management.
 
 ### Verify Your Installation
 
@@ -254,7 +254,7 @@ This guide is organized to build understanding progressively, from fundamentals 
 
 ## Your First Simulation
 
-Let us run a slightly more interesting simulation to get a feel for BLUR. This example simulates a 2D boat accelerating from rest.
+Let us run a slightly more interesting simulation to get a feel for `fomodynamics`. This example simulates a 2D boat accelerating from rest.
 
 ```python
 import jax.numpy as jnp
@@ -292,7 +292,7 @@ u_ss = 50.0 / 10.0  # thrust / drag
 print(f"Expected steady-state: {u_ss:.2f} m/s")
 ```
 
-This example demonstrates several BLUR patterns:
+This example demonstrates several `fomodynamics` patterns:
 - Creating a model with parameters via `attrs` classes
 - Using `ConstantControl` for open-loop simulation
 - Accessing results through the `SimulationResult` object
@@ -302,7 +302,7 @@ This example demonstrates several BLUR patterns:
 
 ## Running Tests
 
-BLUR has an extensive test suite. Running tests is a good way to verify your installation and explore the codebase:
+`fomodynamics` has an extensive test suite. Running tests is a good way to verify your installation and explore the codebase:
 
 ```bash
 # Run all tests (note: some tests are slow)
@@ -320,7 +320,7 @@ uv run pytest tests/analysis/ -v
 uv run pytest tests/test_integration.py -v
 ```
 
-See [CLAUDE.md](../../../../CLAUDE.md) for more details on test organization and JAX memory management.
+See [overall_testing_approach.md](../../overall_testing_approach.md) and [dev/testing.md](../../dev/testing.md) for more details on test organization and JAX memory management.
 
 ---
 
@@ -328,7 +328,7 @@ See [CLAUDE.md](../../../../CLAUDE.md) for more details on test organization and
 
 If you encounter issues:
 
-1. **Check the documentation** - [README.md](../../../../README.md), [CLAUDE.md](../../../../CLAUDE.md), and this guide
+1. **Check the documentation** - [README.md](../../../../README.md) and this guide
 2. **Run the tests** - `uv run pytest tests/ -v -m "not slow"` to verify your installation
 3. **Check existing docs** - See the [docs/](../../) folder for specialized topics
 
@@ -336,8 +336,7 @@ If you encounter issues:
 
 | Document | Purpose |
 |----------|---------|
-| [README.md](../../../../README.md) | Quick start, installation, basic examples |
-| [CLAUDE.md](../../../../CLAUDE.md) | Development guide, commands, conventions |
+| [README.md](../../../../README.md) | Quick start, installation, basic examples, core conventions |
 | [frame_conventions.md](../../frame_conventions.md) | Authoritative frame reference |
 | [control_guide.md](../../control_guide.md) | LQR tuning, stability analysis |
 | [simulator_models.md](../../simulator_models.md) | Complete model documentation |
@@ -346,10 +345,10 @@ If you encounter issues:
 
 ## Next Steps
 
-You are now ready to dive into BLUR. We recommend starting with:
+You are now ready to dive into fomodynamics. We recommend starting with:
 
 1. **[01_jax_primer.md](01_jax_primer.md)** - If you are new to JAX
-2. **[02_core_concepts.md](02_core_concepts.md)** - Essential for understanding all BLUR models
+2. **[02_core_concepts.md](02_core_concepts.md)** - Essential for understanding all `fomodynamics` models
 3. **A model of your choice** - Start with [03_simple_pendulum.md](03_simple_pendulum.md) for the simplest example, or jump to [06_planar_quadrotor.md](06_planar_quadrotor.md) for 2D flight dynamics
 
-Welcome to BLUR!
+Welcome to fomodynamics!

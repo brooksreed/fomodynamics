@@ -8,9 +8,10 @@ This guide covers how to extend BLUR with new force components, dynamic models, 
 
 ## Related Documentation
 
-- [CLAUDE.md](../../../../CLAUDE.md) - Development commands and conventions
+- [README](../../../../README.md) - Quick start, conventions, install
 - [docs/simulator_models.md](../../simulator_models.md) - Complete model reference
-- `dev/testing.md` - Testing and validation patterns - Testing and validation patterns
+- [dev/adding_components.md](../../dev/adding_components.md) - Adding new components, models, schemas
+- [dev/testing.md](../../dev/testing.md) - Testing and validation patterns
 
 ---
 

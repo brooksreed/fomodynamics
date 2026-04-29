@@ -117,6 +117,23 @@ print(result.state, result.control)
 - **Numerical precision**: float64 by default. Override with
   `FMD_USE_FLOAT32=1`.
 
+### Sign gotchas
+
+The conventions above are aerospace-standard but trip up newcomers from
+robotics or graphics backgrounds. Common bug sources:
+
+- **+D is *down* in NED.** Altitude *increase* means `pos_d` *decreases*
+  (more negative). A boat rising out of the water has a *more negative*
+  `pos_d`. This is the most frequent sign-error source.
+- **Angles are in radians internally.** Convert to degrees only for
+  display / human-readable output.
+- **Quaternion is scalar-first** `[qw, qx, qy, qz]` — *not* the
+  `[qx, qy, qz, qw]` order used by ROS, Eigen, or most game engines. Use
+  `pybullet_quat_to_blur_quat()` (and friends) when bridging.
+- **Use circular-aware ops for angles**: `fmd.core.operations.circular_subtract`,
+  `circular_mean`, `wrap_angle` — naïve subtraction breaks at the
+  ±π wrap point.
+
 ## Documentation
 
 Detailed reference docs live under `docs/public/`:

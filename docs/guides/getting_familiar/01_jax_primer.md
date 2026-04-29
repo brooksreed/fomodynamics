@@ -430,7 +430,7 @@ from fmd.simulator import SimplePendulum
 import jax.numpy as jnp
 ```
 
-For more details on precision and GPU configuration, see [CLAUDE.md](../../../../CLAUDE.md).
+For more details on precision and GPU configuration, see [jax_simulator_guide.md](../../jax_simulator_guide.md).
 
 ---
 

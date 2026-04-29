@@ -9,7 +9,7 @@ This section introduces the foundational conventions and mathematical representa
 ## Related Documentation
 
 - [Frame Conventions (authoritative reference)](../../frame_conventions.md) - Complete coordinate frame documentation with transform derivations
-- [CLAUDE.md](../../../../CLAUDE.md) - Core design principles and development commands
+- [README — Core conventions](../../../../README.md#core-conventions) - Frames, units, quaternions, sign gotchas
 - [Simulator Models](../../simulator_models.md) - Detailed model documentation and parameter classes
 
 ---

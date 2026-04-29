@@ -90,7 +90,8 @@ When adding new scripts that produce file output:
 
 ## Package Boundaries — Full Table
 
-See also the import direction rules in [CLAUDE.md](../../CLAUDE.md).
+This package (`fomodynamics`, import `fmd`) is intentionally a self-contained
+public layer. Code in `fmd.*` may not depend on private downstream packages.
 
 | If you're adding... | Put it in... | Future package |
 |---------------------|-------------|----------------|

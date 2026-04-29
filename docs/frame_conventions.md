@@ -1,10 +1,9 @@
-# BLUR Frame Conventions
+# Frame Conventions
 
-This document provides the authoritative reference for coordinate frame conventions used in BLUR and their relationship to external systems (SCG/PyBullet).
+This document provides the authoritative reference for coordinate frame conventions used in `fomodynamics` and their relationship to external systems (SCG/PyBullet).
 
 **Related Documentation:**
-- [CLAUDE.md](../CLAUDE.md) - Core design principles including NED/FRD conventions
-- [benchmark_validation.md](benchmark_validation.md) - Cross-library validation methodology
+- [README.md — Core conventions](../README.md#core-conventions) - Frames, units, quaternions
 - [control_guide.md](control_guide.md) - LQR controller tuning and integrator selection
 - [simulator_models.md](simulator_models.md) - Model documentation and state vectors
 
@@ -12,7 +11,7 @@ This document provides the authoritative reference for coordinate frame conventi
 
 ## 1. Overview
 
-BLUR uses aerospace-standard coordinate frames:
+`fomodynamics` uses aerospace-standard coordinate frames:
 - **World Frame:** NED (North-East-Down)
 - **Body Frame:** FRD (Forward-Right-Down)
 - **Quaternion Convention:** Scalar-first (qw, qx, qy, qz)
@@ -26,7 +25,7 @@ The transforms between these conventions are not simple sign flips—they involv
 
 ---
 
-## 2. BLUR Conventions (Authoritative Definitions)
+## 2. fomodynamics Conventions (Authoritative Definitions)
 
 ### 2.1. World Frame: NED (North-East-Down)
 
@@ -84,7 +83,7 @@ The transforms between these conventions are not simple sign flips—they involv
 
 ### 2.3. Quaternion Convention (Scalar-First)
 
-BLUR uses scalar-first quaternions: **q = [qw, qx, qy, qz]**
+`fomodynamics` uses scalar-first quaternions: **q = [qw, qx, qy, qz]**
 
 | Component | Interpretation |
 |-----------|----------------|
@@ -104,7 +103,7 @@ R(q) = ⎢ 2(qxqy+qzqw)    1-2(qx²+qz²)    2(qyqz-qxqw) ⎥
 
 ### 2.4. State Vector Reference
 
-The BLUR 6-DOF rigid body state vector has 13 components:
+The 6-DOF rigid body state vector has 13 components:
 
 | Index | Name | Description | Frame |
 |-------|------|-------------|-------|

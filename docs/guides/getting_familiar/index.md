@@ -107,6 +107,6 @@ The complete guide takes approximately **12 hours** to work through. However, mo
 
 ## Getting Help
 
-- Check the [CLAUDE.md](../../../../CLAUDE.md) file for development commands and common pitfalls
+- Check the [README](../../../../README.md) for quick start, install, and core conventions
 - Review `docs/frame_conventions.md` for detailed coordinate frame documentation
 - See `docs/simulator_models.md` for model-specific parameter references

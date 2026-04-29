@@ -8,7 +8,7 @@ The simple pendulum is the most basic dynamic system in BLUR. With only 2 states
 
 ## Related Documentation
 
-- [CLAUDE.md](../../../../CLAUDE.md) - Development commands and project overview
+- [README](../../../../README.md) - Quick start, installation, core conventions
 - [docs/simulator_models.md](../../simulator_models.md) - Full model reference
 - [Companion notebook](../../../../notebooks/public/getting_familiar/gf_03_simple_pendulum.ipynb) - Interactive examples
 
