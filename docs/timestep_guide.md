@@ -53,8 +53,6 @@ The Moth 3DOF model has speed-dependent dynamics. The fast pitch mode eigenvalue
 | LQR sim | 5ms | 5ms | `simulate(dt=0.005)` |
 | EKF | 5ms | 5ms | `EKF(dt=0.005)` |
 | LQG | 5ms | 5ms | `simulate_lqg(dt=0.005)` |
-| MPC control | 20ms | 5ms (M=4) | `MothMPC(dt=0.02, M=4)` -- MPC has own inline M |
-| MPC plant sim | N/A | 5ms | `simulate_mpc(dt_sim=0.005)` |
 | High-speed (>17 m/s) | varies | <4.7ms | Use smaller dt directly |
 
 The default timestep is `MOTH_DEFAULT_DT = 0.005` (5ms), exported from `fmd.simulator`.

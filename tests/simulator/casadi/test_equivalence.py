@@ -6,10 +6,9 @@ results to their JAX counterparts at multiple levels:
 - Level 1: Jacobians (A, B matrices)
 - Level 2: Trajectories (RK4 integration)
 
-NOTE (Phase 1 OSS split): Private-vehicle equivalence tests
-(DynamicBicycle, F1TenthBicycle) were extracted into
-`tests/private/simulator/casadi/test_equivalence_private.py` so this
-file imports nothing from the private subtree.
+Covers the public dynamics models shipped with `fomodynamics`. Private
+vehicles (e.g. DynamicBicycle, F1TenthBicycle) live outside this repo
+and have their own equivalence suites.
 """
 
 import pytest
