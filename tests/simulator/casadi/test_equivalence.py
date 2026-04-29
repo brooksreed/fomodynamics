@@ -6,9 +6,9 @@ results to their JAX counterparts at multiple levels:
 - Level 1: Jacobians (A, B matrices)
 - Level 2: Trajectories (RK4 integration)
 
-Covers the public dynamics models shipped with `fomodynamics`. Private
-vehicles (e.g. DynamicBicycle, F1TenthBicycle) live outside this repo
-and have their own equivalence suites.
+Covers the public dynamics models shipped with `fomodynamics`. Any
+private vehicles live outside this repo and maintain their own
+equivalence suites.
 """
 
 import pytest
