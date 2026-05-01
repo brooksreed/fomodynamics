@@ -245,6 +245,14 @@ from fmd.simulator.trim_casadi import (
     validate_thrust_sweep,
 )
 
+# Trim — multi-speed thrust-table calibration sweep
+# (see fmd.simulator.trim_calibration for output helpers: print_results,
+# print_snippet_and_comparison, save_csv, generate_plot, write_outputs,
+# regenerate_outputs)
+from fmd.simulator.trim_calibration import (
+    calibrate_moth_thrust_table,
+)
+
 # Validation toolkit (generic)
 from fmd.simulator.validation import (
     SimCase,
@@ -299,7 +307,7 @@ __all__ = [
     "CasadiTrimResult", "CalibrationTrimResult", "PhaseInfo",
     "CharacteristicScales", "DEFAULT_SCALES",
     "find_casadi_trim", "find_casadi_trim_sweep",
-    "calibrate_moth_thrust",
+    "calibrate_moth_thrust", "calibrate_moth_thrust_table",
     "validate_trim_result", "validate_thrust_sweep",
     "SimCase", "CaseDiagnostics", "run_case", "compute_diagnostics",
     "components", "constraints",
