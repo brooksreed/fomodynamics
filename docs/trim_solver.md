@@ -238,76 +238,48 @@ Thrust is body-x only (forward in FRD frame). In the 3DOF longitudinal model:
 
 The correction is exact when `q = 0` (no Coriolis cross-coupling between surge thrust and pitch/heave). At trim, q is constrained to zero, so the correction is exact at the solution. During optimization iterations where q may be slightly nonzero, there is a small approximation error, but this vanishes at convergence.
 
-## Sweep Modes
+## Calibrating the Thrust Table
 
-Three sweep modes for calibrating the thrust lookup table, each with different speed-to-speed strategies:
+`calibrate_moth_thrust_table` (in `fmd.simulator.trim_calibration`) sweeps a list of target speeds and runs `calibrate_moth_thrust` at each, optionally warm-starting from a JSON seed cache.
 
-### Continuation (`calibrate_moth_thrust_table`)
+```python
+from fmd.simulator.params import MOTH_BIEKER_V3
+from fmd.simulator.trim_calibration import calibrate_moth_thrust_table
 
-Fastest (~2 min). Each speed seeds from the previous speed's solution.
+results = calibrate_moth_thrust_table(
+    MOTH_BIEKER_V3,
+    speeds=range(6, 21),
+    seed_path="trim_seeds.json",  # optional warm-start cache
+)
+```
 
-- **Best for**: Routine use at 8+ m/s, incremental recalibration.
-- **Risk**: Error propagation at low speeds. The low-to-high sweep starts at 6 m/s with a cold start. If 6 m/s converges to a local minimum (e.g., negative elevator), that bad solution seeds 7 m/s, etc.
-- **Details**: `pos_d_guess`, `theta_guess`, `main_flap_guess`, `rudder_elevator_guess`, and `thrust_guess` are all carried forward. Default sweep: 6-20 m/s in 1 m/s steps.
+### Seed cache
 
-### Robust (`calibrate_moth_thrust_table_robust`)
+`seed_path` is a JSON file mapping `"<speed>" -> [pos_d, theta, w, q, u, flap, elev, thrust]` (an 8-vector). When the file exists, matching entries are used as IPOPT initial guesses; converged solutions are written back at the end of the sweep (preserving entries for speeds that were not run). Pass `save_seeds=False` to disable the write-back, or `seed_path=None` to disable the seed mechanism entirely.
 
-Gold standard (~9 min with 3 seeds). Independent multistart at each speed -- no continuation.
-
-- **Best for**: Establishing new reference tables, validating after parameter changes, or when continuation results look suspicious (e.g., negative rudder AoA at low speeds).
-- **How it works**: At each speed, runs `calibrate_moth_thrust_multistart()` which tries the default guess plus 3 physics-informed seeds (varying flap and elevator). Keeps the best result.
-- **Physics-informed seeds**: Explore the positive-elevator branch that the default guess misses at low speeds. Seeds use progressively higher flap (0.05, 0.10, 0.15 rad) and positive elevator (0.02, 0.04, 0.06 rad).
-- **Performance**: (1 default + 3 seeds) x 15 speeds x ~10s = ~10 min.
-- **Reference table output**: Pass `return_reference_table=True` to get a 3-tuple `(speeds, thrusts, reference_table)`. The reference table can be fed directly to `calibrate_moth_thrust_table_seeded()` for fast subsequent runs.
-
-### Seeded (`calibrate_moth_thrust_table_seeded`)
-
-Fast + independent (~2.5 min). Each speed seeded from a reference table.
-
-- **Best for**: Routine recalibration after small parameter changes, when a known-good reference table exists.
-- **How it works**: Each speed gets its initial guess from the reference table (or nearest-neighbor fallback from closest entry). Single solve per speed, no continuation.
-- **Reference table**: Dict mapping speed -> {pos_d_guess, theta_guess, main_flap_guess, rudder_elevator_guess, thrust_guess}. If not provided, falls back to the preset's existing thrust lookup values.
-- **Performance**: 1 seed x 15 speeds x ~10s = ~2.5 min.
-
-### When to use each mode
-
-| Situation | Recommended Mode |
-|-----------|-----------------|
-| First calibration of new geometry | Robust |
-| Checking if low-speed trim looks wrong | Robust |
-| Small parameter tweak (CG, foil area) | Seeded (with robust reference) |
-| Routine recalibration, 8+ m/s only | Continuation |
-| Generating reference for seeded mode | Robust |
+The seed cache is for warm-start *speedup* — given different starts, IPOPT can converge to different points within the residual null-space, so seed-loaded results may differ by a few percent from cold-start results. Both are valid trims (residual ≪ 1e-6); the regularization weights determine which one is preferred.
 
 ### Script usage
 
 ```bash
-# Continuation (default)
-python scripts/calibrate_thrust_table.py
+# Default sweep: 6..20 m/s in 1 m/s steps, ./trim_seeds.json as cache
+uv run python scripts/calibrate_thrust_table.py
 
-# Robust multistart
-python scripts/calibrate_thrust_table.py --mode robust
+# Custom speed list, custom output dir
+uv run python scripts/calibrate_thrust_table.py --speeds 8 10 12 --output-dir ./calib_today
 
-# Seeded from preset
-python scripts/calibrate_thrust_table.py --mode seeded
+# Disable seed loading/saving
+uv run python scripts/calibrate_thrust_table.py --no-seeds
 
-# Custom speeds
-python scripts/calibrate_thrust_table.py --mode robust --speeds 6 7 8 9 10
+# Regenerate report.md and plot from a saved results.json (no re-solve)
+uv run python scripts/calibrate_thrust_table.py --from-dir ./calib_today
 ```
 
-## Continuation Strategy (Detail)
+The script writes `thrust_table.csv`, `results.json`, `report.md`, and `plots/thrust_table_comparison.png`, and prints a paste-ready snippet for `presets.py` plus an old-vs-new comparison table.
 
-### calibrate_moth_thrust_table()
+### Continuation behaviour
 
-The table calibration function sweeps across speeds using continuation: each speed uses the previous speed's solution as its initial guess. This is critical because:
-
-1. **Cold-start convergence**: At higher speeds (>14 m/s), the optimizer with default initial guesses may find suboptimal local minima. The continuation from a nearby speed provides a much better starting point.
-
-2. **Sweep direction**: Default sweep is low-to-high (6→20 m/s). Low speeds converge reliably from cold-start. Each subsequent speed only changes by 1 m/s, keeping the initial guess close to the solution.
-
-3. **What gets continued**: `pos_d_guess`, `theta_guess`, `main_flap_guess`, `rudder_elevator_guess`, and `thrust_guess` are all seeded from the previous result. This captures the smooth variation of all trim variables with speed.
-
-4. **Failure handling**: By default, failures are surfaced to the caller (warning fields on results and script-level handling). The convenience script does not silently inject default trim values.
+Each speed's solve is independent — there is no speed-to-speed propagation within a single sweep. The seed cache provides per-speed warm-starts across runs, which is usually what you want: a once-good seed at a difficult speed (e.g., 8 m/s, 20 m/s) keeps converging well on subsequent re-runs. If you want true speed-to-speed continuation in a single run, call `find_casadi_trim_sweep` directly.
 
 ## No-Surge vs Surge vs Calibration Modes
 
@@ -538,52 +510,16 @@ Single-speed calibration. Builds a Moth3D with `surge_enabled=True`, runs `find_
 ```python
 calibrate_moth_thrust_table(
     params: MothParams,
-    speeds: Sequence[float] | None = None,  # default 6..20
-    **kwargs,  # passed to calibrate_moth_thrust
-) -> tuple[tuple[float, ...], tuple[float, ...]]
+    speeds: Iterable[float],
+    *,
+    seed_path: str | os.PathLike | None = None,
+    save_seeds: bool = True,
+    heel_angle: float = np.deg2rad(30.0),
+    verbose: bool = True,
+) -> list[CalibrationTrimResult]
 ```
 
-Multi-speed calibration with continuation. Returns `(speeds_tuple, thrusts_tuple)` suitable for `MothParams.sail_thrust_speeds` and `sail_thrust_values`.
-
-### calibrate_moth_thrust_multistart
-
-```python
-calibrate_moth_thrust_multistart(
-    params: MothParams,
-    target_u: float,
-    n_seeds: int = 3,
-    **kwargs,  # passed to calibrate_moth_thrust
-) -> CalibrationTrimResult
-```
-
-Single-speed calibration with multistart. Tries the default guess plus physics-informed seeds (varying flap and elevator). Returns the best result across all seeds.
-
-### calibrate_moth_thrust_table_robust
-
-```python
-calibrate_moth_thrust_table_robust(
-    params: MothParams,
-    speeds: Sequence[float] | None = None,  # default 6..20
-    n_seeds: int = 3,
-    return_reference_table: bool = False,
-    **kwargs,  # passed to calibrate_moth_thrust_multistart
-) -> tuple[tuple[float, ...], tuple[float, ...]]  # or 3-tuple if return_reference_table=True
-```
-
-Multi-speed calibration with independent multistart at each speed. No continuation between speeds. Gold standard for establishing reference tables.
-
-### calibrate_moth_thrust_table_seeded
-
-```python
-calibrate_moth_thrust_table_seeded(
-    params: MothParams,
-    speeds: Sequence[float] | None = None,  # default 6..20
-    reference_table: dict[float, dict] | None = None,
-    **kwargs,  # passed to calibrate_moth_thrust
-) -> tuple[tuple[float, ...], tuple[float, ...]]
-```
-
-Multi-speed calibration with per-speed seeding from a reference table. Each speed gets its own independent seed. If `reference_table` is None, builds a minimal one from the preset's thrust lookup values.
+Sweeps `speeds`, calling `calibrate_moth_thrust` at each. With `seed_path`, loads matching entries from a JSON cache as IPOPT initial guesses and (unless `save_seeds=False`) writes converged solutions back at the end of the sweep, preserving entries for speeds that were not run. See "Calibrating the Thrust Table" above for the seed-cache format and the bundled script.
 
 ### validate_trim_result
 
