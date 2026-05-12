@@ -46,6 +46,10 @@ class ClosedLoopScanResult(NamedTuple):
     """Pure-JAX result from closed-loop scan (no numpy, no force extraction).
 
     All fields are JAX arrays, suitable for vmap/jit composition.
+
+    ``ctrl_state_history`` is ``None`` for stateless controllers (LQR /
+    MechanicalWand) and the per-step pytree of controller state for
+    stateful controllers (PID).
     """
 
     times: Array  # (T,)
@@ -58,6 +62,7 @@ class ClosedLoopScanResult(NamedTuple):
     measurements_clean: Array  # (T, p)
     measurements_noisy: Array  # (T, p)
     innovations: Array  # (T, p)
+    ctrl_state_history: Any = None  # pytree with leading dim T, or None
 
 
 @runtime_checkable
@@ -222,6 +227,10 @@ class ClosedLoopResult:
     measurement_output_names: Optional[tuple[str, ...]] = None
     measurement_state_index_map: Optional[dict[str, Optional[int]]] = None
     metadata: Optional[dict] = None
+    # Per-step controller state pytree (length T) for stateful controllers,
+    # or ``None`` for stateless ones. Useful for debugging PID integrator /
+    # prev-err trajectories. Leaves are numpy arrays.
+    ctrl_state_history: Any = None
 
 
 def _closed_loop_scan(
@@ -342,32 +351,53 @@ def _closed_loop_scan(
             new_carry = (
                 x_true_new, sensor_state_new, est_state_new, u, key, ctrl_state_new
             )
+            outputs = (
+                x_true_new,
+                x_est,
+                u,
+                jnp.trace(P_new),
+                jnp.diag(P_new),
+                x_true - x_est,
+                y_clean,
+                y_noisy,
+                innovation,
+                ctrl_state_new,
+            )
         else:
             new_carry = (x_true_new, sensor_state_new, est_state_new, u, key)
-        outputs = (
-            x_true_new,
-            x_est,
-            u,
-            jnp.trace(P_new),
-            jnp.diag(P_new),
-            x_true - x_est,
-            y_clean,
-            y_noisy,
-            innovation,
-        )
+            outputs = (
+                x_true_new,
+                x_est,
+                u,
+                jnp.trace(P_new),
+                jnp.diag(P_new),
+                x_true - x_est,
+                y_clean,
+                y_noisy,
+                innovation,
+            )
         return new_carry, outputs
 
     if _controller_stateful:
         init_carry = (
             x0_true, sensor_state, est_state, u_prev_init, rng_key, ctrl_state_init
         )
+        _, scan_outputs = jax.lax.scan(step_fn, init_carry, jnp.arange(n_steps))
+        (
+            true_rest, est_rest, controls,
+            traces_rest, diags_rest, errors_rest,
+            meas_clean, meas_noisy, innovations,
+            ctrl_state_history,
+        ) = scan_outputs
     else:
         init_carry = (x0_true, sensor_state, est_state, u_prev_init, rng_key)
-    _, (
-        true_rest, est_rest, controls,
-        traces_rest, diags_rest, errors_rest,
-        meas_clean, meas_noisy, innovations,
-    ) = jax.lax.scan(step_fn, init_carry, jnp.arange(n_steps))
+        _, scan_outputs = jax.lax.scan(step_fn, init_carry, jnp.arange(n_steps))
+        (
+            true_rest, est_rest, controls,
+            traces_rest, diags_rest, errors_rest,
+            meas_clean, meas_noisy, innovations,
+        ) = scan_outputs
+        ctrl_state_history = None
 
     # Prepend initial values to get (n_steps+1, ...) arrays
     true_states = jnp.concatenate([x0_true[None], true_rest], axis=0)
@@ -389,6 +419,7 @@ def _closed_loop_scan(
         measurements_clean=meas_clean,
         measurements_noisy=meas_noisy,
         innovations=innovations,
+        ctrl_state_history=ctrl_state_history,
     )
 
 
@@ -507,6 +538,15 @@ def simulate_closed_loop(
         state_index_map = measurement_model.state_index_map or None
         num_outputs = measurement_model.num_outputs
 
+    # Convert per-step controller-state pytree leaves to numpy (stateless
+    # controllers leave this as None; the JAX tree map preserves None).
+    if scan_result.ctrl_state_history is not None:
+        ctrl_state_history_np = jax.tree.map(
+            np.asarray, scan_result.ctrl_state_history
+        )
+    else:
+        ctrl_state_history_np = None
+
     return ClosedLoopResult(
         times=np.asarray(scan_result.times),
         true_states=np.asarray(scan_result.true_states),
@@ -525,4 +565,5 @@ def simulate_closed_loop(
         trim_control=np.asarray(trim_control) if trim_control is not None else None,
         measurement_output_names=output_names,
         measurement_state_index_map=state_index_map,
+        ctrl_state_history=ctrl_state_history_np,
     )

@@ -211,3 +211,66 @@ class TestClosedLoopMeasurementModelNone:
         assert result.times.shape == (n_steps,)
         assert result.true_states.shape == (n_steps + 1, 5)
         assert result.controls.shape == (n_steps, 2)
+
+
+class TestCtrlStateHistory:
+    """``ctrl_state_history`` should be ``None`` for stateless controllers
+    (LQR / MechanicalWand) and a per-step pytree for stateful ones (PID).
+    """
+
+    def test_stateless_returns_none(self, pipeline_setup):
+        """LQR is stateless -> ``ctrl_state_history`` is None."""
+        moth, sensor, estimator, controller, lqr_result, P0, Q_ekf, meas_model = pipeline_setup
+        trim = lqr_result.trim
+        result = simulate_closed_loop(
+            system=moth, sensor=sensor, estimator=estimator,
+            controller=controller,
+            x0_true=jnp.array(trim.state),
+            x0_est=jnp.array(trim.state),
+            P0=P0, dt=0.005, duration=0.5,
+            rng_key=jax.random.PRNGKey(0),
+            u_trim=jnp.array(trim.control),
+        )
+        assert result.ctrl_state_history is None
+
+    def test_pid_populates_history(self):
+        """PID controller -> ``ctrl_state_history`` contains per-step state."""
+        from fmd.simulator.moth_scenarios import create_pid_wand_config
+        from fmd.simulator.controllers import PIDControllerState
+
+        lqr_result = design_moth_lqr(u_forward=10.0)
+        sensor, estimator, controller = create_pid_wand_config(
+            lqr_result, params=MOTH_BIEKER_V3,
+            heel_angle=float(np.deg2rad(30.0)),
+            dt=0.005,
+        )
+        moth = Moth3D(MOTH_BIEKER_V3, u_forward=ConstantSchedule(10.0),
+                      heel_angle=float(np.deg2rad(30.0)))
+        trim_state = jnp.array(lqr_result.trim.state)
+        trim_control = jnp.array(lqr_result.trim.control)
+        P0 = jnp.eye(5) * 0.1
+        duration = 0.5
+        dt = 0.005
+        n_steps = int(duration / dt)
+
+        result = simulate_closed_loop(
+            system=moth, sensor=sensor, estimator=estimator,
+            controller=controller,
+            x0_true=trim_state, x0_est=trim_state,
+            P0=P0, dt=dt, duration=duration,
+            rng_key=jax.random.PRNGKey(0),
+            params=MOTH_BIEKER_V3,
+            trim_state=trim_state, trim_control=trim_control,
+            u_trim=trim_control,
+        )
+        history = result.ctrl_state_history
+        assert history is not None
+        # PIDControllerState NamedTuple shape: integrator (T,), prev_err (T,)
+        assert isinstance(history, PIDControllerState)
+        assert np.asarray(history.integrator).shape == (n_steps,)
+        assert np.asarray(history.prev_err).shape == (n_steps,)
+        # At the trim setpoint the integrator should stay tiny (no
+        # height error -> nothing to integrate). Just sanity-check
+        # finite values, not numerical magnitude.
+        assert np.all(np.isfinite(np.asarray(history.integrator)))
+        assert np.all(np.isfinite(np.asarray(history.prev_err)))
