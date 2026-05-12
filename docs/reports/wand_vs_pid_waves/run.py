@@ -156,14 +156,27 @@ def _to_jsonable(x: Any) -> Any:
     return x
 
 
-def _foil_breach_count(pos_d: np.ndarray, theta: np.ndarray, params, heel_angle):
-    """Count zero-crossings of leeward foil tip depth into negative (breach onsets)."""
+def _foil_breach_count(
+    pos_d: np.ndarray,
+    theta: np.ndarray,
+    params,
+    heel_angle,
+    wave_eta: np.ndarray | None = None,
+):
+    """Count zero-crossings of leeward foil tip depth into negative (breach onsets).
+
+    When ``wave_eta`` (main-foil wave surface elevation, length-matched to
+    ``pos_d``) is supplied, the depth is measured against the
+    *instantaneous* free surface rather than the still-water reference —
+    a tip momentarily emerges only when it actually crosses the local
+    wave surface, not just the mean water level.
+    """
     total_mass = params.hull_mass + params.sailor_mass
     cg_offset = params.sailor_mass * np.asarray(params.sailor_position) / total_mass
     foil_pos = np.asarray(params.main_foil_position) - cg_offset
     tip_depth = compute_leeward_tip_depth(
         pos_d, theta, foil_pos[0], foil_pos[2],
-        params.main_foil_span, heel_angle,
+        params.main_foil_span, heel_angle, wave_eta=wave_eta,
     )
     breached = tip_depth < 0
     transitions = np.diff(breached.astype(int))
@@ -335,10 +348,72 @@ def run_monte_carlo(lqr, *, controller_kind: str, n_seeds: int):
 # ---------------------------------------------------------------------------
 
 
+def _get_main_foil_position(params) -> np.ndarray:
+    """Main-foil position relative to CG (accounts for sailor CG offset).
+
+    Mirrors ``fmd.analysis.closed_loop._get_foil_position`` so the
+    wave-eta query uses the same eff_main_{x,z} as the Moth3D model.
+    """
+    total_mass = params.hull_mass + params.sailor_mass
+    cg_offset = params.sailor_mass * np.asarray(params.sailor_position) / total_mass
+    return np.asarray(params.main_foil_position) - cg_offset
+
+
+def _wave_eta_main_per_seed(
+    true_states: np.ndarray,
+    *,
+    seeds: list[int],
+    foil_pos: np.ndarray,
+) -> np.ndarray:
+    """Compute per-seed main-foil wave elevation, shape (N, T).
+
+    Mirrors the elevation query inside ``Moth3D.compute_aux``: the main
+    foil's NED north position is ``u * t + eff_x * cos(theta) + eff_z *
+    sin(theta)`` and the surface elevation at that point + time is the
+    wave-aware reference for the breach metric.
+    """
+    n_seeds, n_steps, _ = true_states.shape
+    times = np.arange(n_steps) * DT
+    eta_per_seed = np.zeros((n_seeds, n_steps))
+    for k in range(n_seeds):
+        wave_params = attrs.evolve(
+            WAVE_SF_BAY_MODERATE, mean_direction=np.pi, seed=int(seeds[k])
+        )
+        env = Environment.with_waves(wave_params)
+        theta_k = true_states[k, :, 1]
+        u_k = true_states[k, :, 4]
+        cos_th = np.cos(theta_k)
+        sin_th = np.sin(theta_k)
+        # x_main_ned = u * t + eff_main_x * cos(theta) + eff_main_z * sin(theta)
+        # where eff_main_{x,z} = foil_pos relative to CG (already in body frame).
+        x_main_ned = u_k * times + foil_pos[0] * cos_th + foil_pos[2] * sin_th
+        # env.wave_field.elevation is JAX-traceable but works fine with vmap;
+        # here we just do a loop in t for simplicity (50 × 12000 = 600k calls).
+        eta_main = np.asarray(
+            jax.vmap(lambda x, t: env.wave_field.elevation(x, 0.0, t))(
+                jnp.asarray(x_main_ned), jnp.asarray(times)
+            )
+        )
+        eta_per_seed[k] = eta_main
+    return eta_per_seed
+
+
 def aggregate_mc(result, *, trim_state: np.ndarray, trim_control: np.ndarray,
                  controller_kind: str,
-                 u_min: np.ndarray, u_max: np.ndarray):
-    """Aggregate the four required metric groups across MC seeds."""
+                 u_min: np.ndarray, u_max: np.ndarray,
+                 wave_eta_main: np.ndarray | None = None):
+    """Aggregate the four required metric groups across MC seeds.
+
+    Args:
+        result: MC sweep result (batched ClosedLoopResult).
+        trim_state, trim_control: scalar trim used to compute deviations.
+        controller_kind: tag stored in the aggregate.
+        u_min, u_max: control bounds for the saturation fraction.
+        wave_eta_main: optional (N, T) wave elevation at the main-foil
+            position. When supplied, the breach metric is computed
+            against the *instantaneous* free surface (wave-aware). When
+            None, the still-water reference is used (legacy / wave-blind).
+    """
     true_states = np.asarray(result.true_states[:, 1:, :])    # (N, T, n)
     controls = np.asarray(result.controls)                    # (N, T, m)
     n_seeds, n_steps, _ = true_states.shape
@@ -380,8 +455,12 @@ def aggregate_mc(result, *, trim_state: np.ndarray, trim_control: np.ndarray,
         # Depth factor + breaches (steady-state window only)
         dfs = _mean_depth_factor(pd_k, th_k, MOTH_BIEKER_V3, HEEL_ANGLE)
         per_seed["depth_factor_mean"].append(float(np.mean(dfs[ss_idx:])))
+        eta_k_ss = (
+            wave_eta_main[k, ss_idx:] if wave_eta_main is not None else None
+        )
         bc_ss, bf_ss, _ = _foil_breach_count(
             pd_k[ss_idx:], th_k[ss_idx:], MOTH_BIEKER_V3, HEEL_ANGLE,
+            wave_eta=eta_k_ss,
         )
         per_seed["breach_count"].append(int(bc_ss))
         per_seed["breach_fraction"].append(float(bf_ss))
@@ -647,17 +726,30 @@ def main():
     )
     u_min = np.asarray(moth.control_lower_bounds)
     u_max = np.asarray(moth.control_upper_bounds)
-    mc_agg = {
-        kind: aggregate_mc(
+    # Pre-compute wave eta at the main-foil position per seed for the
+    # wave-aware breach metric. Same wave seeds are used for both
+    # controllers (paired comparison), so we compute eta only once.
+    foil_pos = _get_main_foil_position(MOTH_BIEKER_V3)
+    seeds = list(range(n_seeds))
+    # Both controllers see identical true states *only* if the dynamics
+    # respond identically, which they don't — but the wave field is
+    # solely determined by (seed, foil x_ned) and x_ned depends on the
+    # state (u, theta). For consistency we compute eta per controller.
+    mc_agg = {}
+    for kind in ("mechanical", "pid"):
+        true_states_k = np.asarray(mc_results[kind].true_states[:, 1:, :])
+        eta_main = _wave_eta_main_per_seed(
+            true_states_k, seeds=seeds, foil_pos=foil_pos
+        )
+        mc_agg[kind] = aggregate_mc(
             mc_results[kind],
             trim_state=trim_state,
             trim_control=trim_control,
             controller_kind=kind,
             u_min=u_min,
             u_max=u_max,
+            wave_eta_main=eta_main,
         )
-        for kind in ("mechanical", "pid")
-    }
 
     # 6. Plots
     make_single_dashboards(

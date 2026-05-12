@@ -59,16 +59,15 @@ def compute_leeward_tip_depth(
     foil_z: float,
     foil_span: float,
     heel_angle: float,
+    wave_eta: np.ndarray | None = None,
 ) -> np.ndarray:
     """Compute leeward foil tip depth in NED frame.
 
     Delegates to the canonical ``compute_foil_ned_depth`` from moth_forces
-    and applies the leeward tip offset for a heeled boat.
-
-    Note: This computes geometric depth relative to the still water surface
-    (pos_d=0). Wave surface elevation is not accounted for, so in wave
-    conditions the depth is relative to the mean water level, not the
-    local wave surface.
+    and applies the leeward tip offset for a heeled boat. Optionally
+    accounts for the local wave surface elevation so the returned depth
+    is measured relative to the *instantaneous* free surface rather than
+    the still-water reference.
 
     Args:
         pos_d: CG vertical position (m), positive down.
@@ -77,9 +76,18 @@ def compute_leeward_tip_depth(
         foil_z: Foil z-position relative to system CG (m), FRD body frame.
         foil_span: Foil wingspan (m).
         heel_angle: Static heel angle (rad).
+        wave_eta: Optional wave surface elevation at the foil location
+            (m, NED convention: both ``pos_d`` and ``wave_eta`` follow
+            "positive down" semantics — see
+            ``fmd.simulator.components.moth_forces.compute_foil_ned_depth``
+            which the model uses internally). With this convention,
+            ``tip_depth_wave_aware = tip_depth_still - wave_eta`` so a
+            tip at the local surface returns 0. Pass ``None`` for the
+            wave-blind metric (still-water reference).
 
     Returns:
-        Leeward tip depth (m). Positive = submerged.
+        Leeward tip depth (m). Positive = submerged below the
+        (still-water or local-wave) surface; negative = breach.
     """
     # Foil center depth (pure numpy implementation matching moth_forces formula)
     center_depth = (
@@ -89,7 +97,14 @@ def compute_leeward_tip_depth(
     )
     # Leeward tip rises toward surface
     half_span_rise = (foil_span / 2.0) * np.sin(heel_angle)
-    return center_depth - half_span_rise
+    tip_depth = center_depth - half_span_rise
+    if wave_eta is not None:
+        # Matches the in-model sign convention used by
+        # ``compute_foil_ned_depth(..., eta=eta)`` — eta and pos_d are
+        # both NED-positive-down, so the wave-aware depth is
+        # ``tip_depth_still - eta``.
+        tip_depth = tip_depth - wave_eta
+    return tip_depth
 
 
 # ---------------------------------------------------------------------------
@@ -182,9 +197,22 @@ def compute_extended_metrics(
     if params is not None:
         foil_pos = _get_foil_position(params)
 
+        # Wave-aware depth: subtract local wave elevation when available,
+        # so the breach metric measures depth below the *instantaneous*
+        # free surface, not below the still-water reference. Falls back
+        # to the still-water reference when no wave data is provided.
+        wave_eta = None
+        if aux is not None and "wave_eta_main" in aux:
+            wave_eta = np.asarray(aux["wave_eta_main"])
+            # Align lengths: aux is computed on the per-step states (length T)
+            # and `pos_d`/`theta` here are also the per-step true_states[1:]
+            # (length T), so shapes match.
+            if wave_eta.shape != pos_d.shape:
+                wave_eta = None  # mismatch — fall back to wave-blind
+
         tip_depth = compute_leeward_tip_depth(
             pos_d, theta, foil_pos[0], foil_pos[2],
-            params.main_foil_span, heel_angle,
+            params.main_foil_span, heel_angle, wave_eta=wave_eta,
         )
         tip_depth_ss = tip_depth[ss_idx:]
         breached = tip_depth_ss < 0  # negative depth = above water
@@ -198,6 +226,7 @@ def compute_extended_metrics(
             "mean": float(np.mean(tip_depth_ss)),
             "breach_fraction": float(np.mean(breached)),
             "breach_count": breach_count,
+            "wave_aware": wave_eta is not None,
         }
 
     # --- Control effort ---
@@ -779,17 +808,21 @@ def plot_single_dashboard(
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
-    # Panel 6: foil tip depth
+    # Panel 6: foil tip depth (wave-aware when wave eta is available)
     ax = axes[2, 1]
     params = getattr(result, "params", None)
     heel_angle = getattr(result, "heel_angle", 0.0)
     if params is not None:
         foil_pos = _get_foil_position(params)
-
+        wave_eta = (
+            np.asarray(aux["wave_eta_main"])[mask]
+            if aux is not None and "wave_eta_main" in aux
+            else None
+        )
         tip_depth = compute_leeward_tip_depth(
             states[:, POS_D], states[:, THETA],
             foil_pos[0], foil_pos[2],
-            params.main_foil_span, heel_angle,
+            params.main_foil_span, heel_angle, wave_eta=wave_eta,
         )
         ax.plot(t_plot, tip_depth, label="Lee tip", alpha=0.8)
         ax.axhline(0, color="r", linestyle="--", alpha=0.5, label="surface")
@@ -801,10 +834,15 @@ def plot_single_dashboard(
                             alpha=0.2, color="red", label="breach")
 
         if calm_result is not None:
+            calm_wave = (
+                np.asarray(calm_aux["wave_eta_main"])[mask]
+                if calm_aux is not None and "wave_eta_main" in calm_aux
+                else None
+            )
             calm_tip = compute_leeward_tip_depth(
                 calm_states[:, POS_D], calm_states[:, THETA],
                 foil_pos[0], foil_pos[2],
-                params.main_foil_span, heel_angle,
+                params.main_foil_span, heel_angle, wave_eta=calm_wave,
             )
             ax.plot(t_plot, calm_tip, label="Lee tip (calm)",
                     alpha=0.4, color="gray", linestyle="--")
