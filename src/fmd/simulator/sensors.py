@@ -102,10 +102,13 @@ class WandSensor(eqx.Module):
     """
 
     wand_pivot_position: Array
-    wand_length: float = eqx.field(static=True)
+    wand_length: float = eqx.field(static=True, converter=float)
     R: Array
-    heel_angle: float = eqx.field(static=True, default=0.0)
-    n_iterations: int = eqx.field(static=True, default=5)
+    # Cast numpy floats / ``np.float64`` to Python ``float`` so equinox
+    # does not treat them as JAX arrays being set as static. This makes
+    # ``WandSensor(..., heel_angle=np.deg2rad(30.0))`` warning-free.
+    heel_angle: float = eqx.field(static=True, default=0.0, converter=float)
+    n_iterations: int = eqx.field(static=True, default=5, converter=int)
     include_speed_pitch: bool = eqx.field(static=True, default=False)
     fwd_speed_func: ConstantSchedule = ConstantSchedule(10.0)
     encounter_distance_index: Optional[int] = eqx.field(static=True, default=None)

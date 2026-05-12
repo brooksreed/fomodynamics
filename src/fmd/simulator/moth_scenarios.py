@@ -453,9 +453,21 @@ def create_mechanical_wand_config(
     + MechanicalWandController. The wand angle is mechanically linked
     to the flap; elevator is held at trim.
 
-    The default pullrod_offset of 0.005m is tuned so that the linkage
-    produces approximately the correct flap angle at the trim wand angle,
-    eliminating steady-state ride height offset.
+    The default ``pullrod_offset`` of ``0.005 m`` was originally tuned
+    for the ``MOTH_BIEKER_V3`` preset at 30° heel and 10 m/s forward
+    speed. An empirical re-scan (1 mm steps from -20 to +20 mm,
+    minimising ``|ride_height_mean - pos_d_trim|`` over a 30 s
+    calm-water sim) finds the true optimum at that operating point is
+    ``~0.00558 m`` — at the current default the steady-state ride
+    height is ~20 mm shallower than the LQR trim. We keep ``0.005`` as
+    the default for backward compatibility and a stable ``metrics.json``
+    in the canonical wand-vs-PID report; pass
+    ``linkage_overrides={"pullrod_offset": ...}`` to retune for a
+    different preset / heel / speed. The wave-induced steady-state bias
+    under SF Bay moderate waves (mechanical wand drifts ~25 cm
+    *deeper* than trim) is a separate dynamic effect of the linkage's
+    trig saturation and is *not* affected by this static-offset
+    calibration.
 
     Args:
         lqr: Pre-computed LQR design (for trim control and bounds).
