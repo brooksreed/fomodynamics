@@ -186,6 +186,13 @@ class PIDController(eqx.Module):
     ) -> tuple[Array, PIDControllerState]:
         """Compute saturated PID flap command from wand-derived height.
 
+        Cold-start D-term note: on the very first call ``ctrl_state.prev_err``
+        is zero, so the derivative term is ``height_err / dt`` rather than a
+        true error rate. For the default ``Kd = 0`` this is moot, but tuners
+        experimenting with ``Kd > 0`` should expect a one-step "D kick"
+        proportional to the initial error / dt — pre-seeding ``prev_err``
+        to ``height_err`` (or low-pass-filtering the derivative) avoids it.
+
         Args:
             x_est: Estimated state vector (wand angle at index 0).
             t: Current simulation time (unused — PID timing comes from dt).

@@ -61,10 +61,13 @@ Key fields:
   `breach_count`, `breach_fraction`, `flap_rms`,
   `flap_saturation_fraction`, `pitch_rms_error`, `speed_loss_mean`.
 
-Sanity-check the trim values: `trim_state.pos_d_m` should be near
--1.4m (boat flying that distance above water on the main foil at
-10 m/s). If it is +1.4 or 0, the trim solver has failed and you
-should stop and flag the failure rather than write a report.
+Sanity-check the trim values against the `setup.trim_state` listed in
+`metrics.json`. A plausible foiling-moth trim has `pos_d` negative
+with magnitude of order 1 m (boat flying that distance above the
+still-water surface on the main foil). If `pos_d` is positive or
+near zero, the trim solver has failed and you should stop and flag
+the failure rather than write a report. Cross-check against
+`setup.trim_state.theta_deg` (small positive pitch ≈ 1° is normal).
 
 ### Step 3: Read `report_guidelines.txt`
 
@@ -161,9 +164,10 @@ Suggested structure (mirrors `recipe.md` § "Report structure"):
 ## Physics primer (short)
 
 - **NED frame**: x = north, y = east, z = down. pos_d > 0 means below
-  the still-water reference. For a foiling moth, trim pos_d ≈ -1.4 m
-  (boat 1.4 m above the still-water surface, hovering on the main
-  foil).
+  the still-water reference. A foiling-moth trim has `pos_d` negative
+  with magnitude of order 1 m — the exact value depends on the trim
+  speed and preset and is recorded in `metrics.json` `setup.trim_state`.
+  (Boat ~1 m above the still-water surface, hovering on the main foil.)
 - **Wand kinematics**: the wand pivots at the bowsprit and trails to
   the water surface. Boat HIGH (pos_d more negative) → wand
   VERTICAL (small angle ~0) → flap UP (less lift). Boat LOW (pos_d

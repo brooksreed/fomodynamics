@@ -391,6 +391,55 @@ def create_wand_only_config(
     return sensor, estimator, controller
 
 
+def _build_wand_sensor_and_passthrough(
+    lqr: MothTrimLQR,
+    *,
+    params: MothParams,
+    heel_angle: float,
+) -> tuple[WandSensor, "PassthroughEstimator", Array, Array, float]:
+    """Build the wand-only sensor/estimator/bounds triple shared by the
+    mechanical-wand and PID-wand factories.
+
+    This is a pure refactor: both ``create_mechanical_wand_config`` and
+    ``create_pid_wand_config`` previously constructed identical
+    ``WandSensor`` / ``PassthroughEstimator`` instances and read the
+    same control bounds + elevator trim. Extracting the shared work
+    here keeps the two factories' behaviour byte-identical while
+    avoiding duplication.
+
+    Args:
+        lqr: Pre-computed LQR design (for trim control and forward speed).
+        params: MothParams for geometry.
+        heel_angle: Static heel angle (rad).
+
+    Returns:
+        Tuple of (sensor, estimator, u_min, u_max, elevator_trim).
+    """
+    u_forward = lqr.u_forward
+    wand_pivot = params.wand_pivot_position
+
+    # Sensor: wave-aware wand only
+    R_sensor = jnp.diag(jnp.array([_R_WAND]))
+    sensor = WandSensor(
+        wand_pivot_position=jnp.asarray(wand_pivot),
+        wand_length=DEFAULT_WAND_LENGTH,
+        heel_angle=heel_angle,
+        include_speed_pitch=False,
+        R=R_sensor,
+        fwd_speed_func=ConstantSchedule(u_forward),
+    )
+
+    # Estimator: passthrough (wand angle -> slot 0)
+    estimator = PassthroughEstimator(n_states=5)
+
+    # Controller bounds (and elevator trim, shared across both factories)
+    moth = Moth3D(params, u_forward=ConstantSchedule(u_forward), heel_angle=heel_angle)
+    u_min, u_max = moth.control_lower_bounds, moth.control_upper_bounds
+    elevator_trim = float(lqr.trim.control[1])
+
+    return sensor, estimator, u_min, u_max, elevator_trim
+
+
 def create_mechanical_wand_config(
     lqr: MothTrimLQR,
     *,
@@ -421,22 +470,9 @@ def create_mechanical_wand_config(
     """
     from fmd.simulator.components.moth_wand import create_wand_linkage
 
-    u_forward = lqr.u_forward
-    wand_pivot = params.wand_pivot_position
-
-    # Sensor: wave-aware wand only
-    R_sensor = jnp.diag(jnp.array([_R_WAND]))
-    sensor = WandSensor(
-        wand_pivot_position=jnp.asarray(wand_pivot),
-        wand_length=DEFAULT_WAND_LENGTH,
-        heel_angle=heel_angle,
-        include_speed_pitch=False,
-        R=R_sensor,
-        fwd_speed_func=ConstantSchedule(u_forward),
+    sensor, estimator, u_min, u_max, elevator_trim = _build_wand_sensor_and_passthrough(
+        lqr, params=params, heel_angle=heel_angle
     )
-
-    # Estimator: passthrough (wand angle -> slot 0)
-    estimator = PassthroughEstimator(n_states=5)
 
     # Controller: mechanical linkage
     # Default pullrod_offset=0.005 tuned to eliminate steady-state offset
@@ -444,9 +480,6 @@ def create_mechanical_wand_config(
     if linkage_overrides:
         overrides.update(linkage_overrides)
     linkage = create_wand_linkage(**overrides)
-    moth = Moth3D(params, u_forward=ConstantSchedule(u_forward), heel_angle=heel_angle)
-    u_min, u_max = moth.control_lower_bounds, moth.control_upper_bounds
-    elevator_trim = float(lqr.trim.control[1])
 
     controller = MechanicalWandController(
         linkage=linkage,
@@ -510,29 +543,16 @@ def create_pid_wand_config(
     """
     from fmd.simulator.components.moth_wand import wand_angle_from_state
 
-    u_forward = lqr.u_forward
-    wand_pivot = params.wand_pivot_position
-
-    # Sensor: wave-aware wand only (matches create_mechanical_wand_config)
-    R_sensor = jnp.diag(jnp.array([_R_WAND]))
-    sensor = WandSensor(
-        wand_pivot_position=jnp.asarray(wand_pivot),
-        wand_length=DEFAULT_WAND_LENGTH,
-        heel_angle=heel_angle,
-        include_speed_pitch=False,
-        R=R_sensor,
-        fwd_speed_func=ConstantSchedule(u_forward),
+    sensor, estimator, u_min, u_max, elevator_trim = _build_wand_sensor_and_passthrough(
+        lqr, params=params, heel_angle=heel_angle
     )
-
-    # Estimator: passthrough (wand angle -> slot 0)
-    estimator = PassthroughEstimator(n_states=5)
+    wand_pivot = params.wand_pivot_position
 
     # Trim values
     trim_state = jnp.array(lqr.trim.state)
     trim_control = jnp.array(lqr.trim.control)
     pos_d_target = float(trim_state[0])
     flap_trim = float(trim_control[0])
-    elevator_trim = float(trim_control[1])
 
     # Inversion constants (trim attitude assumption: theta=0, heel=0)
     wand_length = DEFAULT_WAND_LENGTH
@@ -570,10 +590,6 @@ def create_pid_wand_config(
             f"PID wand-angle calibration failed: "
             f"pos_d_check={pos_d_check}, pos_d_target={pos_d_target}"
         )
-
-    # Controller bounds
-    moth = Moth3D(params, u_forward=ConstantSchedule(u_forward), heel_angle=heel_angle)
-    u_min, u_max = moth.control_lower_bounds, moth.control_upper_bounds
 
     controller = PIDController(
         Kp=jnp.array(Kp),
