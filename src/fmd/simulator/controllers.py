@@ -224,7 +224,7 @@ class PIDController(eqx.Module):
         )
         return u, ctrl_state_new
 
-    def init_state(self) -> PIDControllerState:
+    def init_controller_state(self) -> PIDControllerState:
         """Return initial PID controller state (zero integrator, zero prev_err)."""
         return PIDControllerState(
             integrator=jnp.zeros_like(self.Kp),

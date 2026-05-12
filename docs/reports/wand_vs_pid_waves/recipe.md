@@ -115,6 +115,15 @@ might tune:
   ventilation point. By default trim sits ~7cm above the foil-tip
   surface intersection — under waves with peak excursion ~0.25m
   this is too shallow for either controller to stay submerged.
+  The helper that computes the foil-tip-at-surface depth lives at
+  `from fmd.simulator.components.moth_forces import compute_tip_at_surface_pos_d`.
+- **Wave-blind breach metric**: `compute_leeward_tip_depth`
+  (used by `_foil_breach_count` in `run.py`) measures tip depth
+  relative to the **mean still water** (`pos_d = 0`), not the local
+  wave surface. The qualitative ordering between controllers is
+  unchanged, but the absolute breach counts in this report would be
+  larger under a wave-aware metric that subtracts `wave_eta_main`
+  before counting zero-crossings.
 - **Wand-only controllers + EKF**: replace `PassthroughEstimator`
   with an EKF to recover vertical velocity, then use it in a
   state-feedback law (effectively LQG). This is what

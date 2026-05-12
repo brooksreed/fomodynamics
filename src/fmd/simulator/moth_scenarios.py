@@ -562,10 +562,14 @@ def create_pid_wand_config(
         - wand_length * np.cos(trim_wand_angle)
         + wand_angle_offset
     )
-    assert abs(pos_d_check - pos_d_target) < 1e-9, (
-        f"PID wand-angle calibration failed: "
-        f"pos_d_check={pos_d_check}, pos_d_target={pos_d_target}"
-    )
+    # ``assert`` is stripped under ``python -O`` and raises the wrong
+    # exception type for a public-API precondition — escalate to
+    # ``ValueError`` so the round-trip identity is always enforced.
+    if abs(pos_d_check - pos_d_target) > 1e-9:
+        raise ValueError(
+            f"PID wand-angle calibration failed: "
+            f"pos_d_check={pos_d_check}, pos_d_target={pos_d_target}"
+        )
 
     # Controller bounds
     moth = Moth3D(params, u_forward=ConstantSchedule(u_forward), heel_angle=heel_angle)

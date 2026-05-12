@@ -1,4 +1,4 @@
-# wand_vs_pid_waves — report (regenerated 2026-05-11)
+# wand_vs_pid_waves — report (regenerated 2026-05-12)
 
 ## Flagged caveats (read first)
 
@@ -34,11 +34,12 @@ for free.
   (-1.40 m) while the mechanical wand drifts ~25 cm deeper
   (-1.19 m), giving the mechanical wand more headroom against the
   ventilation point at pos_d ~ -1.47 m.
-- **PID has 33% less flap RMS and 14x less saturation**
-  (0.097 vs 0.144 rad RMS; 1.2% vs 17.0% saturation fraction).
-  The integrator does most of the work; the proportional term sees
-  small errors. This contradicts the plan's expectation that PID
-  would have *higher* flap activity.
+- **PID has 32% less flap RMS and 14x less saturation**
+  (0.099 vs 0.145 rad RMS, computed as the deviation from trim flap;
+  1.2% vs 17.0% saturation fraction). The integrator does most of
+  the work; the proportional term sees small errors. This
+  contradicts the plan's expectation that PID would have *higher*
+  flap activity.
 - **PID has 36% less pitch RMS error and 2.8x less speed loss**
   (0.037 vs 0.059 rad; 1.42 vs 3.92 m/s). Pitch and speed are
   open-loop in the wand-only setup, so the difference is downstream
@@ -104,9 +105,9 @@ Controllers (both in `fmd.simulator.moth_scenarios`):
 ### Per-controller dashboards
 
 `plots/dashboard_mechanical.png` and `plots/dashboard_pid.png` each
-show six panels: wave elevation (not populated in this report -
-no aux dictionary is passed), pos_d, pitch, forward speed, control
-effort, and leeward-tip depth. For seed = 0:
+show six panels: wave elevation at the main foil and rudder (computed
+from the env's wave field via `compute_aux_trajectory`), pos_d, pitch,
+forward speed, control effort, and leeward-tip depth. For seed = 0:
 
 | Metric | Mechanical | PID |
 |---|---|---|
@@ -165,7 +166,7 @@ visualise the distributions.
 | Ride-height mean (m) | -1.194 +- 0.091 | **-1.406 +- 0.014** | (in metrics.json) |
 | Mean main-foil depth factor | **0.982 +- 0.012** | 0.800 +- 0.034 | (in metrics.json) |
 | Breach count (per 60 s ss-window) | **6.3 +- 2.5** (median 6) | 36.4 +- 4.6 (median 37) | `mc_breach_distribution.png` |
-| Flap RMS (rad) | 0.144 +- 0.025 | **0.097 +- 0.008** | `mc_flap_activity.png` |
+| Flap RMS (rad, dev. from trim) | 0.145 +- 0.025 | **0.099 +- 0.008** | `mc_flap_activity.png` |
 | Flap saturation fraction | 0.170 +- 0.101 | **0.012 +- 0.008** | (in metrics.json) |
 | Pitch RMS error (rad) | 0.059 +- 0.027 | **0.037 +- 0.003** | `mc_pitch_speed.png` |
 | Speed loss vs trim (m/s) | 3.92 +- 1.07 | **1.42 +- 0.53** | `mc_pitch_speed.png` |
@@ -282,8 +283,16 @@ Why does the PID win on tracking and lose on breaches?
   extension.
 - All RMS / breach numbers are computed on the 10-to-60 s
   steady-state window - the initial transient is excluded.
-- The metric `flap_rms` is in radians and includes the trim flap
-  in its mean (the controller does not subtract `flap_trim` from
-  the saved control trace), so it reads roughly as L2-norm of
-  the flap command rather than of (u_flap - flap_trim). The
-  ordering between controllers is still meaningful.
+- The metric `flap_rms` is the RMS of the **deviation from the trim
+  flap** (`u_flap - flap_trim`), so it measures variation about the
+  operating point rather than the L2-norm of the absolute command.
+  At the default trim the trim flap is roughly zero (-0.14 deg), so
+  the numerical shift from the earlier absolute-L2 definition is
+  small, but the new metric is invariant to changes in trim depth.
+- The breach metric is **wave-blind**: `_foil_breach_count` /
+  `compute_leeward_tip_depth` count zero-crossings of tip depth
+  relative to mean still water (`pos_d = 0`), not the local wave
+  surface. So the absolute breach counts here would be larger under
+  a wave-aware metric that subtracts `wave_eta_main` first. The
+  qualitative ordering between controllers (mechanical has fewer
+  breaches than PID at this trim) is unaffected.

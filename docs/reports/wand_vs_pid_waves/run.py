@@ -46,6 +46,7 @@ from fmd.analysis.closed_loop import (
 )
 from fmd.simulator.closed_loop_pipeline import simulate_closed_loop
 from fmd.simulator.environment import Environment
+from fmd.simulator.integrator import SimulationResult, compute_aux_trajectory
 from fmd.simulator.moth_3d import ConstantSchedule, Moth3D
 from fmd.simulator.moth_lqr import design_moth_lqr
 from fmd.simulator.moth_scenarios import (
@@ -211,7 +212,12 @@ def _saturation_fraction(controls: np.ndarray, u_min: np.ndarray, u_max: np.ndar
 
 
 def run_single_seed(lqr, *, controller_kind: str, wave_seed: int):
-    """Run one 60-second simulation with the given controller and wave seed."""
+    """Run one 60-second simulation with the given controller and wave seed.
+
+    Returns the closed-loop result together with the ``Moth3D`` system
+    and the wave-bearing ``Environment`` so callers can post-compute aux
+    trajectories (e.g., ``wave_eta_main`` for the dashboard wave panel).
+    """
     if controller_kind == "mechanical":
         sensor, estimator, controller = create_mechanical_wand_config(
             lqr, params=MOTH_BIEKER_V3, heel_angle=HEEL_ANGLE,
@@ -258,7 +264,7 @@ def run_single_seed(lqr, *, controller_kind: str, wave_seed: int):
     # Cache heel_angle for downstream geometry helpers (used by
     # compute_extended_metrics / plot_single_dashboard)
     result.heel_angle = HEEL_ANGLE
-    return result
+    return result, moth, env
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +321,9 @@ def run_monte_carlo(lqr, *, controller_kind: str, n_seeds: int):
         P0=P0,
         dt=DT,
         duration=DURATION,
+        # Measurement-noise RNG seed for the closed-loop pipeline; the
+        # wave seeds come from WaveParams.seed (built above). Changing
+        # this only affects sensor-noise realisations.
         rng_key=jax.random.PRNGKey(1234),
         env=env_batch,
     )
@@ -326,7 +335,8 @@ def run_monte_carlo(lqr, *, controller_kind: str, n_seeds: int):
 # ---------------------------------------------------------------------------
 
 
-def aggregate_mc(result, *, trim_state: np.ndarray, controller_kind: str,
+def aggregate_mc(result, *, trim_state: np.ndarray, trim_control: np.ndarray,
+                 controller_kind: str,
                  u_min: np.ndarray, u_max: np.ndarray):
     """Aggregate the four required metric groups across MC seeds."""
     true_states = np.asarray(result.true_states[:, 1:, :])    # (N, T, n)
@@ -338,6 +348,8 @@ def aggregate_mc(result, *, trim_state: np.ndarray, controller_kind: str,
     pos_d = true_states[:, :, 0]
     theta = true_states[:, :, 1]
     u_fwd = true_states[:, :, 4]
+
+    flap_trim = float(trim_control[0])
 
     per_seed = {
         "ride_height_rms": [],
@@ -365,21 +377,22 @@ def aggregate_mc(result, *, trim_state: np.ndarray, controller_kind: str,
         per_seed["ride_height_std"].append(float(np.std(pd_k[ss_idx:])))
         per_seed["ride_height_mean"].append(float(np.mean(pd_k[ss_idx:])))
 
-        # Depth factor + breaches
+        # Depth factor + breaches (steady-state window only)
         dfs = _mean_depth_factor(pd_k, th_k, MOTH_BIEKER_V3, HEEL_ANGLE)
         per_seed["depth_factor_mean"].append(float(np.mean(dfs[ss_idx:])))
-        bc, bf, _ = _foil_breach_count(pd_k, th_k, MOTH_BIEKER_V3, HEEL_ANGLE)
-        # Restrict breach to steady-state window
         bc_ss, bf_ss, _ = _foil_breach_count(
             pd_k[ss_idx:], th_k[ss_idx:], MOTH_BIEKER_V3, HEEL_ANGLE,
         )
         per_seed["breach_count"].append(int(bc_ss))
         per_seed["breach_fraction"].append(float(bf_ss))
 
-        # Flap activity (relative to trim flap)
-        flap_trim = float(trim_state[0] * 0.0)  # placeholder; pull from u_trim below
+        # Flap activity: RMS of deviation from trim flap (not absolute flap).
+        # Subtracting flap_trim makes the metric name match its semantics —
+        # it measures variation about the trim point, not the L2-norm of
+        # the absolute command.
         flap = ctl_k[ss_idx:, 0]
-        per_seed["flap_rms"].append(float(np.sqrt(np.mean(flap ** 2))))
+        flap_dev = flap - flap_trim
+        per_seed["flap_rms"].append(float(np.sqrt(np.mean(flap_dev ** 2))))
         per_seed["flap_saturation_fraction"].append(
             _saturation_fraction(ctl_k[ss_idx:], u_min, u_max)
         )
@@ -418,19 +431,31 @@ def aggregate_mc(result, *, trim_state: np.ndarray, controller_kind: str,
 # ---------------------------------------------------------------------------
 
 
-def make_single_dashboards(out_dir, results_single, trim_state):
-    """Per-controller wave-aware dashboard (pos_d, theta, u, flap, tip depth)."""
+def make_single_dashboards(out_dir, results_single, systems_single, envs_single,
+                           trim_state):
+    """Per-controller wave-aware dashboard (pos_d, theta, u, flap, tip depth).
+
+    Computes the auxiliary trajectory (including ``wave_eta_main`` /
+    ``wave_eta_rudder``) per controller and threads it through
+    ``plot_single_dashboard`` so the wave-elevation panel is populated.
+    """
     plots_dir = out_dir / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
     for name, result in results_single.items():
-        # Build minimal "aux" with wave elevation at main foil for the dashboard
-        # using the env-aware wave field
-        wave_field = result.heel_angle  # placeholder, unused below
-        # plot_single_dashboard skips wave panel if aux is None / no wave_eta_main
+        system = systems_single[name]
+        env = envs_single[name]
+        # Build a SimulationResult slice that matches compute_aux_trajectory's
+        # expected per-step layout (times, states, controls all length T).
+        sim_result = SimulationResult(
+            times=np.asarray(result.times),
+            states=np.asarray(result.true_states[1:]),
+            controls=np.asarray(result.controls),
+        )
+        aux = compute_aux_trajectory(system, sim_result, env=env)
         fig = plot_single_dashboard(
             result,
             trim_state=np.asarray(trim_state),
-            aux=None,
+            aux=aux,
             wave_params=WAVE_SF_BAY_MODERATE,
             title=f"{name} (seed={SINGLE_SEED}, SF Bay moderate)",
             t_start=0.0,
@@ -495,7 +520,7 @@ def make_mc_distribution_plots(out_dir, mc_agg):
         fig, ax = plt.subplots(figsize=(7, 5))
         data = [mc_agg["mechanical"][metric_key]["per_seed"],
                 mc_agg["pid"][metric_key]["per_seed"]]
-        bp = ax.boxplot(data, labels=["mechanical", "pid"],
+        bp = ax.boxplot(data, tick_labels=["mechanical", "pid"],
                         showmeans=True, patch_artist=True)
         # Color the two boxes
         bp["boxes"][0].set_facecolor("#cce5ff")
@@ -526,13 +551,13 @@ def make_mc_distribution_plots(out_dir, mc_agg):
         mc_agg["mechanical"]["speed_loss_mean"]["per_seed"],
         mc_agg["pid"]["speed_loss_mean"]["per_seed"],
     ]
-    bp_p = axs[0].boxplot(pitch_data, labels=["mechanical", "pid"],
+    bp_p = axs[0].boxplot(pitch_data, tick_labels=["mechanical", "pid"],
                           showmeans=True, patch_artist=True)
     bp_p["boxes"][0].set_facecolor("#cce5ff")
     bp_p["boxes"][1].set_facecolor("#ffcccc")
     axs[0].set_ylabel("Pitch RMS error (rad)")
     axs[0].set_title("Pitch tracking"); axs[0].grid(True, alpha=0.3)
-    bp_s = axs[1].boxplot(speed_data, labels=["mechanical", "pid"],
+    bp_s = axs[1].boxplot(speed_data, tick_labels=["mechanical", "pid"],
                           showmeans=True, patch_artist=True)
     bp_s["boxes"][0].set_facecolor("#cce5ff")
     bp_s["boxes"][1].set_facecolor("#ffcccc")
@@ -579,14 +604,16 @@ def main():
     # 2. Single-seed time series
     print("\n[1/4] Single-seed time series ...")
     t0 = time.time()
-    results_single = {
-        "mechanical": run_single_seed(
-            lqr, controller_kind="mechanical", wave_seed=SINGLE_SEED
-        ),
-        "pid": run_single_seed(
-            lqr, controller_kind="pid", wave_seed=SINGLE_SEED
-        ),
-    }
+    results_single: dict[str, Any] = {}
+    systems_single: dict[str, Any] = {}
+    envs_single: dict[str, Any] = {}
+    for kind in ("mechanical", "pid"):
+        result, system, env = run_single_seed(
+            lqr, controller_kind=kind, wave_seed=SINGLE_SEED,
+        )
+        results_single[kind] = result
+        systems_single[kind] = system
+        envs_single[kind] = env
     print(f"  done in {time.time()-t0:.1f}s")
 
     # 3. Single-seed metrics
@@ -624,6 +651,7 @@ def main():
         kind: aggregate_mc(
             mc_results[kind],
             trim_state=trim_state,
+            trim_control=trim_control,
             controller_kind=kind,
             u_min=u_min,
             u_max=u_max,
@@ -632,7 +660,9 @@ def main():
     }
 
     # 6. Plots
-    make_single_dashboards(out_dir, results_single, trim_state)
+    make_single_dashboards(
+        out_dir, results_single, systems_single, envs_single, trim_state,
+    )
     make_overlay_plots(out_dir, results_single)
     make_mc_distribution_plots(out_dir, mc_agg)
 

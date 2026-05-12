@@ -142,6 +142,41 @@ class Controller(Protocol):
         ...
 
 
+@runtime_checkable
+class StatefulController(Protocol):
+    """Protocol for controllers that carry persistent state across steps.
+
+    Stateful controllers (e.g., PID with integrator + previous error)
+    must implement ``init_controller_state()`` and a ``control`` method
+    that takes and returns the controller state.
+
+    Note: ``runtime_checkable`` Protocols only verify method names, not
+    signatures. We key on the controller-specific name
+    ``init_controller_state`` (not ``init_state``) so the dispatch
+    cannot be confused with the ``Sensor`` / ``Estimator`` protocols,
+    which also expose an ``init_state`` method.
+    """
+
+    def init_controller_state(self) -> Any:
+        """Return the initial controller state (e.g., zeros for PID)."""
+        ...
+
+    def control(
+        self, x_est: Array, t: float, ctrl_state: Any
+    ) -> tuple[Array, Any]:
+        """Compute control input from estimated state and controller state.
+
+        Args:
+            x_est: State estimate.
+            t: Current simulation time.
+            ctrl_state: Controller-specific persistent state.
+
+        Returns:
+            Tuple of (control vector, updated controller state).
+        """
+        ...
+
+
 @dataclass
 class ClosedLoopResult:
     """Results from a closed-loop simulation.
@@ -237,12 +272,16 @@ def _closed_loop_scan(
     est_state = estimator.init_state(x0_est, P0)
 
     # Optional stateful controller. A controller exposes a stateful
-    # interface by implementing both ``init_state()`` and a
-    # ``control(x_est, t, ctrl_state)`` that returns ``(u, ctrl_state_new)``.
-    # Stateless controllers (LQR, MechanicalWand) are unchanged.
-    _controller_stateful = hasattr(controller, "init_state")
+    # interface by implementing the ``StatefulController`` Protocol —
+    # ``init_controller_state()`` + ``control(x_est, t, ctrl_state)``
+    # returning ``(u, ctrl_state_new)``. The dispatch is keyed on
+    # ``init_controller_state`` (not ``init_state``) so it cannot be
+    # confused with the ``Sensor`` / ``Estimator`` protocols which also
+    # expose an ``init_state`` method. The local boolean is captured at
+    # trace time so the ``lax.scan`` carry shape stays static.
+    _controller_stateful = isinstance(controller, StatefulController)
     if _controller_stateful:
-        ctrl_state_init = controller.init_state()
+        ctrl_state_init = controller.init_controller_state()
     else:
         ctrl_state_init = None
 

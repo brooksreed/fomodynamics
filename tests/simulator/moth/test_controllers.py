@@ -22,6 +22,35 @@ from fmd.simulator.components.moth_wand import (
 )
 
 
+def _replace_gains(
+    controller: PIDController,
+    *,
+    Kp: float | None = None,
+    Ki: float | None = None,
+    Kd: float | None = None,
+) -> PIDController:
+    """Return a copy of ``controller`` with the given PID gains overridden.
+
+    Used by tests that want to isolate behaviour from the default-gain
+    choice (e.g., force ``Kd=0`` so a proportional-sign assertion does
+    not depend on the derivative contribution).
+    """
+    return PIDController(
+        Kp=jnp.array(controller.Kp) if Kp is None else jnp.array(Kp),
+        Ki=jnp.array(controller.Ki) if Ki is None else jnp.array(Ki),
+        Kd=jnp.array(controller.Kd) if Kd is None else jnp.array(Kd),
+        dt=controller.dt,
+        pos_d_target=controller.pos_d_target,
+        flap_trim=controller.flap_trim,
+        elevator_trim=controller.elevator_trim,
+        wand_length=controller.wand_length,
+        wand_pivot_z_body=controller.wand_pivot_z_body,
+        wand_angle_offset=controller.wand_angle_offset,
+        u_min=controller.u_min,
+        u_max=controller.u_max,
+    )
+
+
 @pytest.fixture(scope="module")
 def controller_setup():
     """Shared LQR design for controller tests."""
@@ -240,30 +269,23 @@ class TestPIDController:
     def test_zero_gains_returns_flap_trim(self, pid_setup):
         """With Kp=Ki=Kd=0 the controller returns the trim flap command."""
         _, _, controller, _ = pid_setup
-        zeroed = PIDController(
-            Kp=jnp.array(0.0),
-            Ki=jnp.array(0.0),
-            Kd=jnp.array(0.0),
-            dt=controller.dt,
-            pos_d_target=controller.pos_d_target,
-            flap_trim=controller.flap_trim,
-            elevator_trim=controller.elevator_trim,
-            wand_length=controller.wand_length,
-            wand_pivot_z_body=controller.wand_pivot_z_body,
-            wand_angle_offset=controller.wand_angle_offset,
-            u_min=controller.u_min,
-            u_max=controller.u_max,
-        )
+        zeroed = _replace_gains(controller, Kp=0.0, Ki=0.0, Kd=0.0)
         # Use an arbitrary wand angle far from trim
         x_est = jnp.zeros(5).at[0].set(0.4)
-        u, _ = zeroed.control(x_est, 0.0, zeroed.init_state())
+        u, _ = zeroed.control(x_est, 0.0, zeroed.init_controller_state())
         np.testing.assert_allclose(
             float(u[0]), float(zeroed.flap_trim), atol=1e-9
         )
 
     def test_proportional_sign(self, pid_setup):
-        """Boat below trim (positive height_err) → flap moves up (more lift)."""
+        """Boat below trim (positive height_err) → flap moves up (more lift).
+
+        Constructs a Kd=0 controller explicitly so the assertion does not
+        depend on the default-gain choice (a future non-zero Kd could
+        silently change the test's meaning).
+        """
         _, _, controller, lqr = pid_setup
+        controller = _replace_gains(controller, Kd=0.0)
         wand_pivot = MOTH_BIEKER_V3.wand_pivot_position
         # Wand angle that corresponds to the boat being lower than trim:
         # boat lower → pivot deeper → ratio = h/L smaller → arccos larger.
@@ -278,9 +300,8 @@ class TestPIDController:
         )
         wand_angle_low = trim_wand_angle + 0.05  # boat sunk a bit
         x_est = jnp.zeros(5).at[0].set(wand_angle_low)
-        # Use a fresh state so derivative kick is bounded
-        u, _ = controller.control(x_est, 0.0, controller.init_state())
-        # Flap should be greater than flap_trim (proportional term + tiny D)
+        u, _ = controller.control(x_est, 0.0, controller.init_controller_state())
+        # With Kd=0 the assertion isolates the proportional contribution.
         assert float(u[0]) > float(controller.flap_trim), (
             f"Expected flap > flap_trim for boat-below-trim, got u[0]={float(u[0])}"
         )
@@ -290,7 +311,7 @@ class TestPIDController:
         _, _, controller, _ = pid_setup
         for wand_angle in [0.3, 0.5, 0.7, 0.9]:
             x_est = jnp.zeros(5).at[0].set(wand_angle)
-            u, _ = controller.control(x_est, 0.0, controller.init_state())
+            u, _ = controller.control(x_est, 0.0, controller.init_controller_state())
             expected = float(
                 jnp.clip(controller.elevator_trim, controller.u_min[1], controller.u_max[1])
             )
@@ -301,11 +322,11 @@ class TestPIDController:
         _, _, controller, _ = pid_setup
         # Very large wand angle → boat far below trim → large positive err
         x_est = jnp.zeros(5).at[0].set(1.5)
-        u, _ = controller.control(x_est, 0.0, controller.init_state())
+        u, _ = controller.control(x_est, 0.0, controller.init_controller_state())
         assert float(u[0]) <= float(controller.u_max[0]) + 1e-10
         # Very small wand angle → boat far above trim → large negative err
         x_est = jnp.zeros(5).at[0].set(0.0)
-        u, _ = controller.control(x_est, 0.0, controller.init_state())
+        u, _ = controller.control(x_est, 0.0, controller.init_controller_state())
         assert float(u[0]) >= float(controller.u_min[0]) - 1e-10
 
     def test_vmap_batched(self, pid_setup):
@@ -314,8 +335,8 @@ class TestPIDController:
 
         wand_angles = jnp.array([0.4, 0.5, 0.6, 0.7, 0.8])
         x_est_batch = jnp.zeros((5, 5)).at[:, 0].set(wand_angles)
-        # All seeds share the same fresh init_state
-        ctrl_state = controller.init_state()
+        # All seeds share the same fresh controller state
+        ctrl_state = controller.init_controller_state()
 
         def _single(x_est):
             u, _ = controller.control(x_est, 0.0, ctrl_state)
@@ -332,7 +353,7 @@ class TestPIDController:
         _, _, controller, _ = pid_setup
         # Force a specific height_err by choosing a wand angle slightly off trim
         x_est = jnp.zeros(5).at[0].set(0.7)
-        ctrl_state = controller.init_state()
+        ctrl_state = controller.init_controller_state()
         integrators = [float(ctrl_state.integrator)]
         for _ in range(5):
             _, ctrl_state = controller.control(x_est, 0.0, ctrl_state)
