@@ -1,0 +1,63 @@
+## Physics Guidance for wand_vs_pid_waves Report
+
+### NED Frame Convention
+- pos_d is positive DOWN in NED. A pos_d that becomes MORE NEGATIVE means
+  the boat is RISING (climbing above the still-water reference). Trim
+  pos_d is typically around -0.95 to -1.0 m (boat flying that distance
+  above the surface, on its main foil).
+- A breach event is when the leeward foil tip emerges above the water
+  surface (tip_depth < 0).
+
+### What this report compares
+- ``mechanical_wand``: WandSensor + PassthroughEstimator +
+  MechanicalWandController. The wand-to-flap conversion is a pure
+  trig/lever linkage (``WandLinkage``). It is fast (no sensor lag,
+  no controller dynamics) but has fixed gain and zero integrator —
+  any steady-state offset must be tuned via the linkage hardware.
+- ``pid_wand``: WandSensor + PassthroughEstimator + PIDController. The
+  wand angle is inverted to a closed-form ride-height estimate
+  (assuming trim attitude) and fed through PID(Kp, Ki, Kd) on height
+  error. The integrator allows zero steady-state offset under bias;
+  Kd damps oscillation. The price is potentially higher flap activity
+  and risk of saturation under aggressive gains.
+
+### Expected qualitative differences
+- PID should have *lower* ride-height RMS than the mechanical wand
+  in waves (the integrator rejects the wave-induced steady bias).
+- PID should have *higher* flap activity and a higher fraction of
+  time saturated than the mechanical wand (it acts harder).
+- PID should have *fewer* breach events than the mechanical wand
+  (better height tracking).
+- Both should stay foiling on average (mean foil tip depth > 0 over
+  the steady-state window).
+- Pitch tracking and forward-speed loss are secondary metrics; expect
+  both controllers to behave similarly there (they both leave the
+  rudder elevator at trim).
+
+### NED-sign pitfalls
+- "Lower ride-height RMS" means a smaller std of pos_d about trim —
+  it does NOT mean pos_d is more negative.
+- A breach happens when tip_depth crosses ZERO going negative.
+  ``breach_count`` is the number of zero-crossings into negative.
+- Mean depth factor > 0 means the foil is on average submerged.
+
+### What to flag (do NOT silently accept)
+- If PID has higher ride-height RMS than the mechanical wand, the
+  gains likely need tuning (or there is a sign error in the
+  closed-form inversion).
+- If mean foil tip depth < 0, both controllers are flying off the
+  foil on average — the wave amplitude is too large for the wand
+  controller envelope.
+- Asymmetric saturation (flap pinned to one limit) indicates a
+  steady bias the integrator cannot recover from within the
+  saturation envelope.
+
+### Report structure (follow interpretation_skill.md for full detail)
+1. Summary: 3-5 bullets, lead with the headline RMS / breach numbers.
+2. Setup: trim state, wave preset, controller gains, sim parameters.
+3. Single-seed time series (seed=0): pos_d, theta, u, flap, depth factor.
+4. Monte Carlo (50 seeds): box/violin plots of RMS, breach count,
+   flap activity. Use metrics.json for exact numbers.
+5. Mechanism: why does PID help (or not)? Where does it saturate?
+6. Tuning suggestions: which gain to raise, which wave preset is
+   harder, what would benefit from a wave-aware sensor model.
