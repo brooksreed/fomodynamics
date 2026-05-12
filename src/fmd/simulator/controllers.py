@@ -134,6 +134,13 @@ class PIDController(eqx.Module):
         Kp: Proportional gain (rad-flap per m-height-error).
         Ki: Integral gain (rad-flap per m-height-error-second).
         Kd: Derivative gain (rad-flap per (m-height-error / second)).
+        Kb: Back-calculation anti-windup gain (1/s — same units as
+            ``1 / Ki * dt``). When ``Ki > 0`` the controller uses the
+            Aström back-calculation recipe:
+            ``integrator += (err - Kb * (u_unsat - u_sat)) * dt``.
+            With the default ``Kb = 1 / Ki`` the integrator stops
+            growing as soon as the flap saturates. Set ``Kb = 0`` for
+            classical (no anti-windup) behaviour.
         dt: Control timestep (s) — must match simulation dt.
         pos_d_target: Target ride height (m, NED).
         flap_trim: Trim flap command (rad).
@@ -149,6 +156,7 @@ class PIDController(eqx.Module):
     Kp: Array
     Ki: Array
     Kd: Array
+    Kb: Array
     dt: Array
     pos_d_target: Array
     flap_trim: Array
@@ -214,9 +222,30 @@ class PIDController(eqx.Module):
         # has sunk below the target, so flap must increase (more lift).
         height_err = pos_d_est - self.pos_d_target
 
-        integrator_new = ctrl_state.integrator + height_err * self.dt
         derivative = (height_err - ctrl_state.prev_err) / self.dt
 
+        # First propose the unsaturated control using the *previous*
+        # integrator so we can measure how much the limiter clips it.
+        u_unsat_flap = (
+            self.flap_trim
+            + self.Kp * height_err
+            + self.Ki * ctrl_state.integrator
+            + self.Kd * derivative
+        )
+        u_sat_flap = jnp.clip(u_unsat_flap, self.u_min[0], self.u_max[0])
+        u_excess = u_unsat_flap - u_sat_flap
+
+        # Aström back-calculation: when the flap is saturated, subtract
+        # ``Kb * excess`` from the integrator update so it stops growing
+        # once the actuator can no longer follow the command. Outside
+        # saturation, ``u_excess = 0`` and this reduces to the classical
+        # update ``integrator += err * dt``.
+        integrator_new = ctrl_state.integrator + (
+            height_err - self.Kb * u_excess
+        ) * self.dt
+
+        # Re-evaluate with the updated integrator so the next-step view
+        # of the actuator command reflects the wind-up correction.
         u_flap = (
             self.flap_trim
             + self.Kp * height_err

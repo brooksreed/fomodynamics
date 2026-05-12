@@ -519,6 +519,8 @@ def create_pid_wand_config(
     Kp: float = _DEFAULT_PID_KP,
     Ki: float = _DEFAULT_PID_KI,
     Kd: float = _DEFAULT_PID_KD,
+    Kb: Optional[float] = None,
+    target_pos_d: Optional[float] = None,
 ) -> tuple[Sensor, Estimator, Controller]:
     """Create wand-only PID sensor/estimator/controller triple.
 
@@ -537,6 +539,20 @@ def create_pid_wand_config(
             controls only the wave-aware sensor's geometry.
         dt: Simulation timestep, used for the PID integral and derivative.
         Kp, Ki, Kd: PID gains. Defaults are conservative starting values.
+        Kb: Anti-windup back-calculation gain. ``None`` (default) selects
+            the Aström recipe ``1/Ki`` when ``Ki > 0`` else ``0``. Set
+            to ``0.0`` to disable anti-windup.
+        target_pos_d: Optional override for the PID's setpoint (m, NED).
+            ``None`` (default) uses ``lqr.trim.state[0]`` — the natural
+            trim ride height. When provided, the closed-form inversion
+            offset is recomputed so the round-trip identity holds at
+            the new target: ``estimate_pos_d(trim_wand_angle) ==
+            target_pos_d``. Note that "exact at trim" no longer means
+            "exact at the natural trim wand angle" — it means "exact
+            at the requested deeper/shallower target once the
+            integrator settles". Useful for setting a safety margin
+            below the natural trim (e.g.
+            ``target_pos_d = compute_tip_at_surface_pos_d() - 0.30``).
 
     Returns:
         Tuple of (sensor, estimator, controller).
@@ -551,7 +567,9 @@ def create_pid_wand_config(
     # Trim values
     trim_state = jnp.array(lqr.trim.state)
     trim_control = jnp.array(lqr.trim.control)
-    pos_d_target = float(trim_state[0])
+    pos_d_target = (
+        float(target_pos_d) if target_pos_d is not None else float(trim_state[0])
+    )
     flap_trim = float(trim_control[0])
 
     # Inversion constants (trim attitude assumption: theta=0, heel=0)
@@ -591,10 +609,19 @@ def create_pid_wand_config(
             f"pos_d_check={pos_d_check}, pos_d_target={pos_d_target}"
         )
 
+    # Anti-windup gain. Aström back-calculation recipe Kb = 1 / Ki when
+    # the integral gain is on; otherwise Kb has no effect and we set it
+    # to 0 so the (Kb * 0)-saturation term zeroes out cleanly.
+    if Kb is None:
+        kb_value = (1.0 / Ki) if Ki > 0.0 else 0.0
+    else:
+        kb_value = float(Kb)
+
     controller = PIDController(
         Kp=jnp.array(Kp),
         Ki=jnp.array(Ki),
         Kd=jnp.array(Kd),
+        Kb=jnp.array(kb_value),
         dt=jnp.array(dt),
         pos_d_target=jnp.array(pos_d_target),
         flap_trim=jnp.array(flap_trim),

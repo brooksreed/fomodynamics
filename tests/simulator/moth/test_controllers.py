@@ -28,6 +28,7 @@ def _replace_gains(
     Kp: float | None = None,
     Ki: float | None = None,
     Kd: float | None = None,
+    Kb: float | None = None,
 ) -> PIDController:
     """Return a copy of ``controller`` with the given PID gains overridden.
 
@@ -39,6 +40,7 @@ def _replace_gains(
         Kp=jnp.array(controller.Kp) if Kp is None else jnp.array(Kp),
         Ki=jnp.array(controller.Ki) if Ki is None else jnp.array(Ki),
         Kd=jnp.array(controller.Kd) if Kd is None else jnp.array(Kd),
+        Kb=jnp.array(controller.Kb) if Kb is None else jnp.array(Kb),
         dt=controller.dt,
         pos_d_target=controller.pos_d_target,
         flap_trim=controller.flap_trim,
@@ -349,17 +351,107 @@ class TestPIDController:
         assert np.all(np.asarray(u_batch[:, 0]) >= float(controller.u_min[0]) - 1e-9)
 
     def test_integrator_accumulates(self, pid_setup):
-        """Constant non-zero error makes the integrator term grow monotonically."""
+        """Outside saturation, the integrator update equals ``err * dt`` per step.
+
+        Asserts the actual update law (not just monotonicity), so a future
+        change to the integration scheme (or to anti-windup behaviour
+        below the saturation limit) gets caught.
+        """
         _, _, controller, _ = pid_setup
-        # Force a specific height_err by choosing a wand angle slightly off trim
-        x_est = jnp.zeros(5).at[0].set(0.7)
+        # Choose a wand angle that produces a small enough error to keep
+        # the flap unsaturated for the whole 5 steps. Trim wand angle
+        # is ~0.7-0.8 rad; small positive offset gives a modest err.
+        x_est = jnp.zeros(5).at[0].set(float(controller.wand_angle_offset * 0.0 + 0.78))
+        # Solve for the resulting height_err so we can predict the integrator.
+        pos_d_est = float(controller.estimate_pos_d(jnp.array(x_est[0])))
+        height_err = pos_d_est - float(controller.pos_d_target)
+        dt = float(controller.dt)
+
         ctrl_state = controller.init_controller_state()
         integrators = [float(ctrl_state.integrator)]
         for _ in range(5):
-            _, ctrl_state = controller.control(x_est, 0.0, ctrl_state)
+            u, ctrl_state = controller.control(x_est, 0.0, ctrl_state)
+            # Sanity: flap must not saturate during this test.
+            assert (
+                float(controller.u_min[0]) + 1e-6
+                < float(u[0])
+                < float(controller.u_max[0]) - 1e-6
+            ), "Test precondition violated: flap saturated."
             integrators.append(float(ctrl_state.integrator))
-        # Integrator should be strictly monotonic (same sign each step)
         diffs = np.diff(integrators)
-        assert np.all(diffs > 0) or np.all(diffs < 0), (
-            f"Integrator not monotonic: {integrators}"
+        # Below saturation, each step should add exactly ``err * dt``.
+        np.testing.assert_allclose(
+            diffs, np.full_like(diffs, height_err * dt), atol=1e-9
+        )
+
+    def test_anti_windup_holds_during_saturation(self, pid_setup):
+        """Under sustained saturation, anti-windup keeps the integrator bounded.
+
+        With a high ``Kp`` and a large constant height-error signal the
+        unsaturated flap command exceeds ``u_max`` from step 1; the
+        classical update would let the integrator grow without bound.
+        The Aström back-calculation update used here clamps it to a
+        finite asymptote.
+        """
+        _, _, controller, _ = pid_setup
+        # Force the flap deep into saturation: large Kp, modest Ki (so Kb
+        # = 1 / Ki is finite and effective).
+        controller = _replace_gains(controller, Kp=50.0, Ki=1.0, Kd=0.0)
+        # Wand angle far from trim -> large positive height_err and a
+        # positive flap command well past u_max.
+        x_est = jnp.zeros(5).at[0].set(1.4)
+        ctrl_state = controller.init_controller_state()
+        integrators = []
+        for _ in range(200):
+            u, ctrl_state = controller.control(x_est, 0.0, ctrl_state)
+            integrators.append(float(ctrl_state.integrator))
+            # Confirm we are indeed saturated for the whole run.
+            assert float(u[0]) >= float(controller.u_max[0]) - 1e-9
+
+        integrators = np.asarray(integrators)
+        # Anti-windup invariant: the integrator must STOP changing once
+        # the system reaches a steady (saturated) state. Classical update
+        # would keep adding ``err * dt`` indefinitely; back-calculation
+        # winds the integrator to the value that makes
+        # ``u_unsat = u_sat``, then holds it. The asymptotic value can be
+        # large in absolute terms (it cancels Kp*err to land at u_max)
+        # but the step-to-step change near the end must be tiny.
+        dt = float(controller.dt)
+        pos_d_est = float(
+            controller.estimate_pos_d(jnp.array(x_est[0]))
+        )
+        height_err = pos_d_est - float(controller.pos_d_target)
+        classical_per_step = abs(height_err * dt)
+
+        last_diffs = np.abs(np.diff(integrators[-10:]))
+        # Anti-windup should drive the step change to ~1e-3 of the
+        # classical update at steady state (the residual is the
+        # tiny ``err * dt`` that the back-calculation does not cancel).
+        assert np.max(last_diffs) < 0.05 * classical_per_step, (
+            f"Anti-windup did not stabilise; max step-change in last 10 "
+            f"= {np.max(last_diffs)}, classical per-step = {classical_per_step}"
+        )
+
+        # Disabling anti-windup (Kb=0) should make the integrator grow
+        # linearly without bound.
+        no_aw = _replace_gains(controller, Kb=0.0)
+        ctrl_state2 = no_aw.init_controller_state()
+        ints2 = []
+        for _ in range(200):
+            _, ctrl_state2 = no_aw.control(x_est, 0.0, ctrl_state2)
+            ints2.append(float(ctrl_state2.integrator))
+        ints2 = np.asarray(ints2)
+        # Without anti-windup, last 10 steps should each add ~err * dt
+        # (no clamping).
+        last_diffs_no_aw = np.abs(np.diff(ints2[-10:]))
+        np.testing.assert_allclose(
+            last_diffs_no_aw,
+            np.full_like(last_diffs_no_aw, classical_per_step),
+            rtol=1e-6,
+        )
+        # And the integrator should keep growing in magnitude (last >
+        # first by a lot).
+        assert abs(ints2[-1]) > 10.0 * abs(ints2[0]), (
+            f"Without anti-windup, integrator should grow significantly: "
+            f"no_aw_first={ints2[0]}, no_aw_final={ints2[-1]}"
         )
