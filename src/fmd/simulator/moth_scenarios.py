@@ -38,7 +38,11 @@ from fmd.simulator.closed_loop_pipeline import (
     Sensor,
     simulate_closed_loop,
 )
-from fmd.simulator.controllers import LQRController, MechanicalWandController
+from fmd.simulator.controllers import (
+    LQRController,
+    MechanicalWandController,
+    PIDController,
+)
 from fmd.simulator.estimators import EKFEstimator, PassthroughEstimator
 from fmd.simulator.moth_lqr import design_moth_lqr, MothTrimLQR
 from fmd.simulator.params import MothParams, MOTH_BIEKER_V3
@@ -447,6 +451,137 @@ def create_mechanical_wand_config(
     controller = MechanicalWandController(
         linkage=linkage,
         elevator_trim=elevator_trim,
+        u_min=u_min,
+        u_max=u_max,
+    )
+
+    return sensor, estimator, controller
+
+
+# Default PID gains for the wand-only PID controller.
+#
+# Conservative starting point chosen to give a stable baseline for the
+# wand_vs_pid_waves report. The wand-only LQG flap gain on pos_d at
+# u=10 m/s is ~1.28 rad/m; we run at roughly half that magnitude on
+# the proportional term to leave margin under wave forcing.
+#
+# Kd is zero by design: the only state the controller sees is the
+# wand angle, which in waves is already a high-bandwidth signal (wave
+# orbital motion couples directly into wand-tip elevation). A finite
+# Kd amplifies that noise and destabilises the boat (verified during
+# tuning — Kd=0.15 with Kp=1.5 drove pitch RMS to ~0.5 rad). Users
+# who want derivative action should low-pass the wand signal first
+# or estimate vertical velocity through an EKF.
+_DEFAULT_PID_KP = 0.6     # rad flap per m height error
+_DEFAULT_PID_KI = 0.1     # rad flap per m*s
+_DEFAULT_PID_KD = 0.0     # rad flap per (m/s)
+
+
+def create_pid_wand_config(
+    lqr: MothTrimLQR,
+    *,
+    params: MothParams = MOTH_BIEKER_V3,
+    heel_angle: float = np.deg2rad(30.0),
+    dt: float = 0.005,
+    Kp: float = _DEFAULT_PID_KP,
+    Ki: float = _DEFAULT_PID_KI,
+    Kd: float = _DEFAULT_PID_KD,
+) -> tuple[Sensor, Estimator, Controller]:
+    """Create wand-only PID sensor/estimator/controller triple.
+
+    Uses ``WandSensor(include_speed_pitch=False)`` + ``PassthroughEstimator``
+    + ``PIDController``. The PID acts on a closed-form nonlinear estimate
+    of ride height from wand angle (trim-attitude assumption: theta=0,
+    heel=0). At construction time, a ``wand_angle_offset`` calibration is
+    computed so the inversion exactly reproduces ``pos_d_target`` when
+    evaluated at the trim wand angle.
+
+    Args:
+        lqr: Pre-computed LQR design (for trim state/control).
+        params: MothParams for geometry.
+        heel_angle: Static heel angle used for the sensor (rad).
+            The PID inversion still assumes heel=0 — this argument
+            controls only the wave-aware sensor's geometry.
+        dt: Simulation timestep, used for the PID integral and derivative.
+        Kp, Ki, Kd: PID gains. Defaults are conservative starting values.
+
+    Returns:
+        Tuple of (sensor, estimator, controller).
+    """
+    from fmd.simulator.components.moth_wand import wand_angle_from_state
+
+    u_forward = lqr.u_forward
+    wand_pivot = params.wand_pivot_position
+
+    # Sensor: wave-aware wand only (matches create_mechanical_wand_config)
+    R_sensor = jnp.diag(jnp.array([_R_WAND]))
+    sensor = WandSensor(
+        wand_pivot_position=jnp.asarray(wand_pivot),
+        wand_length=DEFAULT_WAND_LENGTH,
+        heel_angle=heel_angle,
+        include_speed_pitch=False,
+        R=R_sensor,
+        fwd_speed_func=ConstantSchedule(u_forward),
+    )
+
+    # Estimator: passthrough (wand angle -> slot 0)
+    estimator = PassthroughEstimator(n_states=5)
+
+    # Trim values
+    trim_state = jnp.array(lqr.trim.state)
+    trim_control = jnp.array(lqr.trim.control)
+    pos_d_target = float(trim_state[0])
+    flap_trim = float(trim_control[0])
+    elevator_trim = float(trim_control[1])
+
+    # Inversion constants (trim attitude assumption: theta=0, heel=0)
+    wand_length = DEFAULT_WAND_LENGTH
+    wand_pivot_z_body = float(wand_pivot[2])
+
+    # Calibrate angle offset so the inversion is exact at the trim
+    # wand angle. The trim wand angle is computed from the *actual* trim
+    # attitude (with heel_angle, trim theta) so the wand sensor at trim
+    # is consistent with what the EKF-free PID will see.
+    trim_wand_angle = float(
+        wand_angle_from_state(
+            pos_d=trim_state[0],
+            theta=trim_state[1],
+            wand_pivot_position=jnp.asarray(wand_pivot),
+            wand_length=wand_length,
+            heel_angle=heel_angle,
+        )
+    )
+    pos_d_est_without_offset = (
+        -wand_pivot_z_body - wand_length * np.cos(trim_wand_angle)
+    )
+    wand_angle_offset = pos_d_target - pos_d_est_without_offset
+
+    # Sanity check: round-trip identity at trim
+    pos_d_check = (
+        -wand_pivot_z_body
+        - wand_length * np.cos(trim_wand_angle)
+        + wand_angle_offset
+    )
+    assert abs(pos_d_check - pos_d_target) < 1e-9, (
+        f"PID wand-angle calibration failed: "
+        f"pos_d_check={pos_d_check}, pos_d_target={pos_d_target}"
+    )
+
+    # Controller bounds
+    moth = Moth3D(params, u_forward=ConstantSchedule(u_forward), heel_angle=heel_angle)
+    u_min, u_max = moth.control_lower_bounds, moth.control_upper_bounds
+
+    controller = PIDController(
+        Kp=jnp.array(Kp),
+        Ki=jnp.array(Ki),
+        Kd=jnp.array(Kd),
+        dt=jnp.array(dt),
+        pos_d_target=jnp.array(pos_d_target),
+        flap_trim=jnp.array(flap_trim),
+        elevator_trim=jnp.array(elevator_trim),
+        wand_length=jnp.array(wand_length),
+        wand_pivot_z_body=jnp.array(wand_pivot_z_body),
+        wand_angle_offset=jnp.array(wand_angle_offset),
         u_min=u_min,
         u_max=u_max,
     )

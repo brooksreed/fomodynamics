@@ -1,16 +1,25 @@
-"""Tests for LQRController and MechanicalWandController."""
+"""Tests for LQRController, MechanicalWandController, and PIDController."""
 
 from fmd.simulator import _config  # noqa: F401
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from fmd.simulator.controllers import LQRController, MechanicalWandController
+from fmd.simulator.controllers import (
+    LQRController,
+    MechanicalWandController,
+    PIDController,
+)
 from fmd.simulator.moth_lqr import design_moth_lqr
 from fmd.simulator.moth_3d import MAIN_FLAP_MIN, MAIN_FLAP_MAX
 from fmd.simulator.params import MOTH_BIEKER_V3
-from fmd.simulator.components.moth_wand import create_wand_linkage
+from fmd.simulator.components.moth_wand import (
+    DEFAULT_WAND_LENGTH,
+    create_wand_linkage,
+    wand_angle_from_state,
+)
 
 
 @pytest.fixture(scope="module")
@@ -190,3 +199,146 @@ class TestMechanicalWandController:
             assert flaps[i + 1] > flaps[i], (
                 f"Flap not monotonically increasing: {flaps}"
             )
+
+
+# =============================================================================
+# PIDController
+# =============================================================================
+
+
+@pytest.fixture(scope="module")
+def pid_setup():
+    """Build a PIDController calibrated to the MOTH_BIEKER_V3 trim point."""
+    from fmd.simulator.moth_scenarios import create_pid_wand_config
+
+    lqr = design_moth_lqr(u_forward=10.0)
+    sensor, estimator, controller = create_pid_wand_config(
+        lqr, params=MOTH_BIEKER_V3, heel_angle=np.deg2rad(30.0)
+    )
+    return sensor, estimator, controller, lqr
+
+
+class TestPIDController:
+    """Tests for PIDController: inversion identity, gain signs, saturation."""
+
+    def test_closed_form_inversion_round_trip(self, pid_setup):
+        """Inversion evaluated at trim wand angle reproduces ``pos_d_target``."""
+        _, _, controller, lqr = pid_setup
+        wand_pivot = MOTH_BIEKER_V3.wand_pivot_position
+        trim_wand_angle = wand_angle_from_state(
+            pos_d=jnp.array(lqr.trim.state[0]),
+            theta=jnp.array(lqr.trim.state[1]),
+            wand_pivot_position=jnp.asarray(wand_pivot),
+            wand_length=DEFAULT_WAND_LENGTH,
+            heel_angle=np.deg2rad(30.0),
+        )
+        pos_d_est = controller.estimate_pos_d(trim_wand_angle)
+        np.testing.assert_allclose(
+            float(pos_d_est), float(controller.pos_d_target), atol=1e-9
+        )
+
+    def test_zero_gains_returns_flap_trim(self, pid_setup):
+        """With Kp=Ki=Kd=0 the controller returns the trim flap command."""
+        _, _, controller, _ = pid_setup
+        zeroed = PIDController(
+            Kp=jnp.array(0.0),
+            Ki=jnp.array(0.0),
+            Kd=jnp.array(0.0),
+            dt=controller.dt,
+            pos_d_target=controller.pos_d_target,
+            flap_trim=controller.flap_trim,
+            elevator_trim=controller.elevator_trim,
+            wand_length=controller.wand_length,
+            wand_pivot_z_body=controller.wand_pivot_z_body,
+            wand_angle_offset=controller.wand_angle_offset,
+            u_min=controller.u_min,
+            u_max=controller.u_max,
+        )
+        # Use an arbitrary wand angle far from trim
+        x_est = jnp.zeros(5).at[0].set(0.4)
+        u, _ = zeroed.control(x_est, 0.0, zeroed.init_state())
+        np.testing.assert_allclose(
+            float(u[0]), float(zeroed.flap_trim), atol=1e-9
+        )
+
+    def test_proportional_sign(self, pid_setup):
+        """Boat below trim (positive height_err) → flap moves up (more lift)."""
+        _, _, controller, lqr = pid_setup
+        wand_pivot = MOTH_BIEKER_V3.wand_pivot_position
+        # Wand angle that corresponds to the boat being lower than trim:
+        # boat lower → pivot deeper → ratio = h/L smaller → arccos larger.
+        trim_wand_angle = float(
+            wand_angle_from_state(
+                pos_d=jnp.array(lqr.trim.state[0]),
+                theta=jnp.array(lqr.trim.state[1]),
+                wand_pivot_position=jnp.asarray(wand_pivot),
+                wand_length=DEFAULT_WAND_LENGTH,
+                heel_angle=np.deg2rad(30.0),
+            )
+        )
+        wand_angle_low = trim_wand_angle + 0.05  # boat sunk a bit
+        x_est = jnp.zeros(5).at[0].set(wand_angle_low)
+        # Use a fresh state so derivative kick is bounded
+        u, _ = controller.control(x_est, 0.0, controller.init_state())
+        # Flap should be greater than flap_trim (proportional term + tiny D)
+        assert float(u[0]) > float(controller.flap_trim), (
+            f"Expected flap > flap_trim for boat-below-trim, got u[0]={float(u[0])}"
+        )
+
+    def test_elevator_held_at_trim(self, pid_setup):
+        """Elevator output is the (clipped) trim value regardless of wand angle."""
+        _, _, controller, _ = pid_setup
+        for wand_angle in [0.3, 0.5, 0.7, 0.9]:
+            x_est = jnp.zeros(5).at[0].set(wand_angle)
+            u, _ = controller.control(x_est, 0.0, controller.init_state())
+            expected = float(
+                jnp.clip(controller.elevator_trim, controller.u_min[1], controller.u_max[1])
+            )
+            np.testing.assert_allclose(float(u[1]), expected, atol=1e-10)
+
+    def test_flap_saturation_enforced(self, pid_setup):
+        """Extreme wand angle clips flap to bounds."""
+        _, _, controller, _ = pid_setup
+        # Very large wand angle → boat far below trim → large positive err
+        x_est = jnp.zeros(5).at[0].set(1.5)
+        u, _ = controller.control(x_est, 0.0, controller.init_state())
+        assert float(u[0]) <= float(controller.u_max[0]) + 1e-10
+        # Very small wand angle → boat far above trim → large negative err
+        x_est = jnp.zeros(5).at[0].set(0.0)
+        u, _ = controller.control(x_est, 0.0, controller.init_state())
+        assert float(u[0]) >= float(controller.u_min[0]) - 1e-10
+
+    def test_vmap_batched(self, pid_setup):
+        """vmap over a batch of wand-angle measurements works."""
+        _, _, controller, _ = pid_setup
+
+        wand_angles = jnp.array([0.4, 0.5, 0.6, 0.7, 0.8])
+        x_est_batch = jnp.zeros((5, 5)).at[:, 0].set(wand_angles)
+        # All seeds share the same fresh init_state
+        ctrl_state = controller.init_state()
+
+        def _single(x_est):
+            u, _ = controller.control(x_est, 0.0, ctrl_state)
+            return u
+
+        u_batch = jax.vmap(_single)(x_est_batch)
+        assert u_batch.shape == (5, 2)
+        # Each output should be within bounds
+        assert np.all(np.asarray(u_batch[:, 0]) <= float(controller.u_max[0]) + 1e-9)
+        assert np.all(np.asarray(u_batch[:, 0]) >= float(controller.u_min[0]) - 1e-9)
+
+    def test_integrator_accumulates(self, pid_setup):
+        """Constant non-zero error makes the integrator term grow monotonically."""
+        _, _, controller, _ = pid_setup
+        # Force a specific height_err by choosing a wand angle slightly off trim
+        x_est = jnp.zeros(5).at[0].set(0.7)
+        ctrl_state = controller.init_state()
+        integrators = [float(ctrl_state.integrator)]
+        for _ in range(5):
+            _, ctrl_state = controller.control(x_est, 0.0, ctrl_state)
+            integrators.append(float(ctrl_state.integrator))
+        # Integrator should be strictly monotonic (same sign each step)
+        diffs = np.diff(integrators)
+        assert np.all(diffs > 0) or np.all(diffs < 0), (
+            f"Integrator not monotonic: {integrators}"
+        )

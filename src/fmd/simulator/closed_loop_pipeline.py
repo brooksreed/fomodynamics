@@ -236,9 +236,22 @@ def _closed_loop_scan(
     sensor_state = sensor.init_state()
     est_state = estimator.init_state(x0_est, P0)
 
+    # Optional stateful controller. A controller exposes a stateful
+    # interface by implementing both ``init_state()`` and a
+    # ``control(x_est, t, ctrl_state)`` that returns ``(u, ctrl_state_new)``.
+    # Stateless controllers (LQR, MechanicalWand) are unchanged.
+    _controller_stateful = hasattr(controller, "init_state")
+    if _controller_stateful:
+        ctrl_state_init = controller.init_state()
+    else:
+        ctrl_state_init = None
+
     # Initialize u_prev
     if u_prev_init is None:
-        u_prev_init = controller.control(x0_est, 0.0)
+        if _controller_stateful:
+            u_prev_init, _ = controller.control(x0_est, 0.0, ctrl_state_init)
+        else:
+            u_prev_init = controller.control(x0_est, 0.0)
 
     # Convert noise override to JAX array for use inside scan
     _noise_override = (
@@ -248,7 +261,10 @@ def _closed_loop_scan(
     )
 
     def step_fn(carry, i):
-        x_true, sensor_state_c, est_state_c, u_prev, key = carry
+        if _controller_stateful:
+            x_true, sensor_state_c, est_state_c, u_prev, key, ctrl_state_c = carry
+        else:
+            x_true, sensor_state_c, est_state_c, u_prev, key = carry
         t = i * dt
 
         # 1. Sense: generate measurement from true state
@@ -266,7 +282,10 @@ def _closed_loop_scan(
         )
 
         # 3. Control: compute control from estimated state
-        u = controller.control(x_est, t)
+        if _controller_stateful:
+            u, ctrl_state_new = controller.control(x_est, t, ctrl_state_c)
+        else:
+            u = controller.control(x_est, t)
 
         # 4. Dynamics: propagate true state
         x_true_new = rk4_step(system, x_true, u, dt, t, env=env)
@@ -280,7 +299,12 @@ def _closed_loop_scan(
         # Extract covariance info from estimator state.
         _, P_new = est_state_new
 
-        new_carry = (x_true_new, sensor_state_new, est_state_new, u, key)
+        if _controller_stateful:
+            new_carry = (
+                x_true_new, sensor_state_new, est_state_new, u, key, ctrl_state_new
+            )
+        else:
+            new_carry = (x_true_new, sensor_state_new, est_state_new, u, key)
         outputs = (
             x_true_new,
             x_est,
@@ -294,7 +318,12 @@ def _closed_loop_scan(
         )
         return new_carry, outputs
 
-    init_carry = (x0_true, sensor_state, est_state, u_prev_init, rng_key)
+    if _controller_stateful:
+        init_carry = (
+            x0_true, sensor_state, est_state, u_prev_init, rng_key, ctrl_state_init
+        )
+    else:
+        init_carry = (x0_true, sensor_state, est_state, u_prev_init, rng_key)
     _, (
         true_rest, est_rest, controls,
         traces_rest, diags_rest, errors_rest,
