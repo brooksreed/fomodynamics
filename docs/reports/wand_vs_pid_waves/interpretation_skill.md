@@ -25,11 +25,13 @@ docs/reports/wand_vs_pid_waves/
 ├── run.py
 └── plots/
     ├── dashboard_mechanical.png
-    ├── dashboard_pid.png
+    ├── dashboard_pid_natural.png
+    ├── dashboard_pid_deeper.png
     ├── compare_ride_height.png
     ├── compare_flap_command.png
     ├── compare_wand_angle.png
     ├── mc_ride_height_rms.png
+    ├── mc_ride_height_rms_around_target.png
     ├── mc_breach_distribution.png
     ├── mc_flap_activity.png
     └── mc_pitch_speed.png
@@ -57,17 +59,34 @@ Key fields:
   control effort, control rate, settling time, has_nan).
 - `monte_carlo.<controller>` — per-seed arrays plus aggregate
   mean/std/median/min/max for: `ride_height_rms`,
-  `ride_height_std`, `ride_height_mean`, `depth_factor_mean`,
-  `breach_count`, `breach_fraction`, `flap_rms`,
-  `flap_saturation_fraction`, `pitch_rms_error`, `speed_loss_mean`.
+  `ride_height_rms_around_target` (RMS vs own setpoint — use this
+  for cross-setpoint comparison; `ride_height_rms` measures vs
+  natural-trim pos_d and penalises any controller that targets
+  a different depth), `ride_height_std`, `ride_height_mean`,
+  `target_pos_d_m`, `depth_factor_mean`, `breach_count`,
+  `breach_fraction`, `flap_rms`, `flap_saturation_fraction`,
+  `pitch_rms_error`, `speed_loss_mean`.
 
-Sanity-check the trim values against the `setup.trim_state` listed in
-`metrics.json`. A plausible foiling-moth trim has `pos_d` negative
-with magnitude of order 1 m (boat flying that distance above the
-still-water surface on the main foil). If `pos_d` is positive or
-near zero, the trim solver has failed and you should stop and flag
-the failure rather than write a report. Cross-check against
-`setup.trim_state.theta_deg` (small positive pitch ≈ 1° is normal).
+Controllers in `metrics.json`:
+- `mechanical` — passive linkage
+- `pid_natural` — PID at natural trim pos_d
+- `pid_deeper` — PID with `target_pos_d = foil_tip_at_surface + 0.30 m`
+  (30 cm safety margin; NED-positive-down so + makes pos_d less
+  negative = boat rides lower = foil more submerged)
+
+Sanity-check the trim values against `setup.trim_state`. A plausible
+foiling-moth trim has `pos_d` negative with magnitude of order 1 m.
+Cross-check `setup.trim_state.theta_deg` (small positive pitch ≈ 1°
+is normal). Each controller's `target_pos_d_m` is stored in
+`monte_carlo.<controller>`.
+
+**Important cross-setpoint caveat**: `pid_deeper.rms_vs_target` (0.189m
+in the 50-seed run) is higher than `pid_natural.rms_vs_target` (0.091m).
+This is a documented known limitation, NOT a bug. The deeper setpoint
+shifts the pitch equilibrium from ~0.8° to ~3°, and the inversion was
+calibrated at the natural trim theta. The theta-induced residual is
+~8 cm in calm water, ~14 cm under waves. The safety-relevant metric is
+`breach_count`, where pid_deeper dominates (1.7 vs 25 vs 86).
 
 ### Step 3: Read `report_guidelines.txt`
 
@@ -92,11 +111,13 @@ For every PNG in `plots/`, write a section in `report.md` describing:
 
 Group plots logically:
 
-- **Single seed (seed=0)**: `dashboard_*.png`, `compare_*.png`.
-  Discuss the time-series behaviour, phase relationship with wave
-  forcing, controller saturation events.
+- **Single seed (seed=0)**: three dashboards (`dashboard_mechanical.png`,
+  `dashboard_pid_natural.png`, `dashboard_pid_deeper.png`) and three
+  comparison overlays. Discuss the time-series behaviour, phase
+  relationship with wave forcing, controller saturation events.
 - **Monte Carlo (50 seeds)**: `mc_*.png`. Discuss the distribution
-  spread, paired comparison, outliers.
+  spread, paired comparison, outliers. Use `mc_ride_height_rms_around_target.png`
+  (not `mc_ride_height_rms.png`) when comparing cross-setpoint tracking quality.
 
 ### Step 5: Cross-check NED signs
 
@@ -182,23 +203,33 @@ Suggested structure (mirrors `recipe.md` § "Report structure"):
   raw wand signal amplifies wave-orbital noise and can destabilise
   the boat — keep Kd=0 unless you also low-pass the wand.
 - **Closed-form inversion (PID)**: under trim-attitude assumption
-  (theta=0, heel=0), the wand-angle-to-pos_d mapping is a single
-  trig function:
-  `pos_d_est = -wand_pivot_z_body - wand_length * cos(wand_angle)`,
-  plus a per-construction calibration offset that pins the
-  inversion to `pos_d_target` at the trim wand angle.
+  (theta=trim_theta, constant heel), the wand-angle-to-pos_d mapping
+  is a single trig function:
+  `pos_d_est = -wand_pivot_z_body * cos(heel) - wand_length * cos(wand_angle) + offset`,
+  where `offset` is a per-construction calibration that absorbs the
+  trim-theta residual and makes the inversion pos_d-agnostic for any
+  pos_d reached under theta=trim_theta. Residual bias arises when the
+  operating theta differs from trim_theta (e.g., the deeper setpoint
+  shifts pitch equilibrium by ~2°, producing ~8 cm calm-water bias).
 
 ## What to flag (do **not** silently accept)
 
 If any of the following is observed, write a flag at the top of the
 report instead of (or in addition to) the headline summary:
 
-- **PID has higher ride-height RMS than mechanical wand.** Default
-  expectation is the reverse. If true, the gains likely need tuning
-  or there is a sign error somewhere in the inversion.
-- **Mean foil depth factor < 0.3 for either controller.** That
-  means the foil is fully ventilating on average — the wave
-  amplitude is outside the controller's envelope.
+- **pid_natural has higher rms_vs_target than mechanical.** pid_natural
+  should win on tracking (lowest rms_vs_target) — if not, there's a
+  tuning issue or sign error in the inversion.
+- **pid_deeper breach_count ≥ mechanical breach_count.** The whole
+  point of the deeper setpoint is to suppress breaches. If this
+  doesn't hold, the target is not deep enough or the theta-shift
+  bias is overwhelming the safety margin.
+- **Mean foil depth factor < 0.3 for any controller.** Foil is
+  ventilating on average — wave amplitude is outside the envelope.
+- **rms_vs_target ordering for pid_deeper > pid_natural.** This IS
+  the expected outcome (theta-shift limitation) but still deserves
+  a clear flag and explanation so readers don't interpret it as a
+  bug. Do NOT silently accept — document the mechanism.
 - **Asymmetric saturation** (flap pinned to only one limit > 50%
   of the time). Indicates a steady bias the integrator cannot
   recover from.

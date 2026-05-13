@@ -2,31 +2,39 @@
 
 ## Purpose
 
-Compare a passive mechanical wand-to-flap linkage against a wand-only
-PID controller under SF Bay moderate waves. The report is the canonical
-fmd example of how to organise a regeneratable analysis: a recipe +
-script + agent-readable interpretation skill that any user can clone,
-re-run, and tweak as a starting point for their own tuning.
+Compare a passive mechanical wand-to-flap linkage against two wand-only
+PID configurations (natural trim and deeper trim) under SF Bay moderate
+waves. The report is the canonical fmd example of how to organise a
+regeneratable analysis: a recipe + script + agent-readable interpretation
+skill that any user can clone, re-run, and tweak as a starting point for
+their own tuning.
 
 ## Prerequisites
 
 - Moth model: `MOTH_BIEKER_V3`
-- Trim solve: `find_moth_trim(u_forward=10 m/s, heel_angle=30 deg)`
+- Trim solve: `design_moth_lqr(u_forward=10.0)` (heel=30 deg)
 - Wave preset: `WAVE_SF_BAY_MODERATE` (Hs=0.5m, Tp=3.0s, JONSWAP
   gamma=4.0, Stokes 2nd order), head seas (`mean_direction=pi`)
-- Controllers (both in `fmd.simulator.moth_scenarios`):
+- Controllers (all in `fmd.simulator.moth_scenarios`):
   - `create_mechanical_wand_config()` (default linkage,
     `pullrod_offset=0.005`)
-  - `create_pid_wand_config()` with default gains
-    `Kp=0.6, Ki=0.1, Kd=0.0` (rad-flap per m-height-error,
-    per m·s, per m/s)
-- Closed-form wand-to-height inversion (PID): assumes trim attitude
-  (theta=0, heel=0), with a per-construction `wand_angle_offset`
-  calibrated so the inversion reproduces `pos_d_target` at the trim
-  wand angle (round-trip identity).
-- Simulation: 60s duration, dt=0.005s, paired wave seeds (mechanical
-  and PID see the same wave field per seed).
-- Monte Carlo: 50 wave seeds (5 in `--quick`); both controllers run
+  - `create_pid_wand_config()` — natural trim, default gains
+    `Kp=0.6, Ki=0.1, Kd=0.0`, `target_pos_d = trim pos_d ≈ -1.40 m`
+  - `create_pid_wand_config(target_pos_d=compute_tip_at_surface_pos_d() + 0.30)`
+    — deeper trim; commands the boat 30 cm below the foil-tip
+    ventilation threshold (NED-positive-down: `+ 0.30` makes pos_d
+    *less* negative = boat rides lower = foil tip more submerged).
+- Closed-form wand-to-height inversion (PID): under trim attitude
+  (theta=trim_theta) and constant heel, the mapping is:
+  `pos_d_est = -z_pivot * cos(heel) - L_wand * cos(wand_angle) + offset`
+  where `offset` is a per-construction calibration that absorbs the
+  trim-theta residual. The inversion is pos_d-agnostic for fixed theta.
+  A known limitation: a different setpoint shifts the pitch equilibrium,
+  introducing a theta-induced steady-state offset of order ~8 cm
+  (documented in scratchpad, user-approved to accept and document).
+- Simulation: 60s duration, dt=0.005s, paired wave seeds (all
+  controllers see the same wave field per seed).
+- Monte Carlo: 50 wave seeds (5 in `--quick`); all controllers run
   through the same `fmd.simulator.sweep.sweep_closed_loop` vmap.
 
 ## How to regenerate
@@ -55,12 +63,14 @@ docs/reports/wand_vs_pid_waves/
 ├── report_guidelines.txt      physics checklist for the interpretation skill
 ├── report.md                  generated narrative (committed)
 └── plots/                     PNG artifacts
-    ├── dashboard_mechanical.png       single-run 6-panel dashboard
-    ├── dashboard_pid.png              single-run 6-panel dashboard
-    ├── compare_ride_height.png        seed-0 overlay
-    ├── compare_flap_command.png       seed-0 overlay
-    ├── compare_wand_angle.png         seed-0 overlay
+    ├── dashboard_mechanical.png       single-run 6-panel dashboard (seed 0)
+    ├── dashboard_pid_natural.png      single-run 6-panel dashboard (seed 0)
+    ├── dashboard_pid_deeper.png       single-run 6-panel dashboard (seed 0)
+    ├── compare_ride_height.png        seed-0 three-way overlay
+    ├── compare_flap_command.png       seed-0 three-way overlay
+    ├── compare_wand_angle.png         seed-0 three-way overlay
     ├── mc_ride_height_rms.png         50-seed box+strip
+    ├── mc_ride_height_rms_around_target.png  50-seed RMS vs own setpoint
     ├── mc_breach_distribution.png     50-seed box+strip
     ├── mc_flap_activity.png           50-seed box+strip
     └── mc_pitch_speed.png             50-seed box+strip (paired)
@@ -68,20 +78,27 @@ docs/reports/wand_vs_pid_waves/
 
 ## Report structure (followed by `interpretation_skill.md`)
 
-1. **Summary** — 3-5 bullets, lead with headline ride-height RMS and
-   breach count.
-2. **Setup** — trim state, wave preset, gains, sim parameters
+1. **Flagged caveats** — any unexpected results or orderings that differ
+   from the plan's expectations. Write this section first; it prevents
+   the reader from being misled by the headline numbers.
+2. **Summary** — 3-5 bullets, lead with `breach_count` (safety metric)
+   and `ride_height_rms_around_target` (intra-controller tracking).
+3. **Setup** — trim state, wave preset, gains, sim parameters
    (pull verbatim from `metrics.json["setup"]`).
-3. **Single-seed time series** (seed=0) — pos_d, theta, u, flap, depth
-   factor for both controllers, with phase relationship to wave forcing.
-4. **Monte Carlo (50 seeds)** — distribution box/violin plots for ride
+4. **Single-seed time series** (seed=0) — walk through
+   `dashboard_mechanical.png`, `dashboard_pid_natural.png`,
+   `dashboard_pid_deeper.png`, and the three comparison overlays.
+5. **Monte Carlo (50 seeds)** — distribution box/strip plots for ride
    height RMS, breach count, flap activity, pitch RMS, speed loss.
    Reference the exact numbers from `metrics.json["monte_carlo"]`.
-5. **Mechanism** — why the PID outperforms (or underperforms) on each
-   metric; where it saturates; what the mechanical wand's offset means
-   for safety margin.
-6. **Tuning suggestions** — which gain to raise/lower, which wave
-   preset is harder, what would benefit from a wave-aware sensor model.
+   Use `ride_height_rms_around_target` (not `ride_height_rms`) for
+   cross-setpoint comparison — `ride_height_rms` penalises any
+   controller whose setpoint differs from the natural trim.
+6. **Mechanism** — why the deeper-trim PID dominates on breach count;
+   why the PID at natural trim tracks perfectly but breaches more;
+   why rms_vs_target for pid_deeper is higher than pid_natural (theta
+   equilibrium shift at the deeper setpoint — see scratchpad).
+7. **Tuning suggestions** — lead with deeper-trim as the recommendation.
 
 ## When to re-run
 
@@ -97,33 +114,38 @@ docs/reports/wand_vs_pid_waves/
 
 ## What to tune
 
-This report is a **starting point**, not a final answer. Things you
-might tune:
+This report is a **starting point**, not a final answer. The canonical
+recommendation is **deeper-trim PID**:
+
+```python
+from fmd.simulator.components.moth_forces import compute_tip_at_surface_pos_d
+from fmd.simulator.moth_scenarios import create_pid_wand_config
+
+# NED-positive-down: + 0.30 makes pos_d less negative = boat rides lower
+# = foil tip 30 cm below the ventilation threshold (not -0.30!)
+target = compute_tip_at_surface_pos_d() + 0.30
+sensor, estimator, controller = create_pid_wand_config(
+    lqr, heel_angle=heel, target_pos_d=float(target)
+)
+```
+
+The inversion bakes in `cos(heel)` on the pivot z-component, making it
+pos_d-agnostic under theta=trim_theta. Known limitation: a different
+setpoint shifts the pitch equilibrium, leaving an ~8 cm residual bias
+(see scratchpad). The breach metric (1.7 vs 25 vs 86 per 60 s window)
+tells the safety story better than rms_vs_target.
+
+Other things to tune:
 
 - **PID gains**: pass `Kp=, Ki=, Kd=` to `create_pid_wand_config`.
-  Try Kd > 0 only if you first low-pass the wand angle (the raw
-  signal carries wave-orbital motion, which destabilises the boat
-  through D).
+  Try Kd > 0 only if you first low-pass the wand angle (raw wand
+  signal carries wave-orbital motion → destabilisation through D).
 - **Wave preset**: swap `WAVE_SF_BAY_MODERATE` for
   `WAVE_SF_BAY_LIGHT` (lighter chop, shorter wavelengths), or
   build your own `WaveParams`.
 - **Simulation duration / seeds**: 60s × 50 seeds is enough to see
   the qualitative ordering; for tighter confidence intervals raise
   `n_seeds` or `duration`.
-- **Trim depth (safety margin)**: pass `target_pos_d` to
-  `design_moth_lqr` to put the trim deeper relative to the foil
-  ventilation point. By default trim sits ~7cm above the foil-tip
-  surface intersection — under waves with peak excursion ~0.25m
-  this is too shallow for either controller to stay submerged.
-  The helper that computes the foil-tip-at-surface depth lives at
-  `from fmd.simulator.components.moth_forces import compute_tip_at_surface_pos_d`.
-- **Wave-blind breach metric**: `compute_leeward_tip_depth`
-  (used by `_foil_breach_count` in `run.py`) measures tip depth
-  relative to the **mean still water** (`pos_d = 0`), not the local
-  wave surface. The qualitative ordering between controllers is
-  unchanged, but the absolute breach counts in this report would be
-  larger under a wave-aware metric that subtracts `wave_eta_main`
-  before counting zero-crossings.
 - **Wand-only controllers + EKF**: replace `PassthroughEstimator`
   with an EKF to recover vertical velocity, then use it in a
   state-feedback law (effectively LQG). This is what
