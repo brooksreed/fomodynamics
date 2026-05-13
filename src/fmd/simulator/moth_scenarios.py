@@ -556,15 +556,22 @@ def create_pid_wand_config(
             to ``0.0`` to disable anti-windup.
         target_pos_d: Optional override for the PID's setpoint (m, NED).
             ``None`` (default) uses ``lqr.trim.state[0]`` — the natural
-            trim ride height. When provided, the closed-form inversion
-            offset is recomputed so the round-trip identity holds at
-            the new target: ``estimate_pos_d(trim_wand_angle) ==
-            target_pos_d``. Note that "exact at trim" no longer means
-            "exact at the natural trim wand angle" — it means "exact
-            at the requested deeper/shallower target once the
-            integrator settles". Useful for setting a safety margin
-            below the natural trim (e.g.
-            ``target_pos_d = compute_tip_at_surface_pos_d() - 0.30``).
+            trim ride height. When provided, the **inversion is still
+            calibrated against the natural trim wand angle** so the
+            controller has a non-zero height-error signal at startup
+            and integrates the boat toward the override. The
+            round-trip identity at the natural trim is
+            ``estimate_pos_d(trim_wand_angle) == natural_trim_pos_d``;
+            ``height_err = natural_pos_d - target_pos_d`` at trim
+            drives the integrator. Once the boat settles around the
+            new target, the inversion is no longer "exact at trim"
+            (the boat is no longer at the natural-trim wand angle) but
+            the PID achieves zero steady-state error against
+            ``target_pos_d``. Use this kwarg to set a safety margin
+            below the natural trim, e.g.
+            ``target_pos_d = compute_tip_at_surface_pos_d() + 0.30``
+            (NB: in NED-positive-down, deeper = MORE POSITIVE pos_d,
+            so use ``+ margin``, not ``- margin``).
 
     Returns:
         Tuple of (sensor, estimator, controller).
@@ -579,8 +586,18 @@ def create_pid_wand_config(
     # Trim values
     trim_state = jnp.array(lqr.trim.state)
     trim_control = jnp.array(lqr.trim.control)
+    # The closed-form inversion is *always* calibrated against the
+    # natural trim wand angle (the wand angle that the wand sensor
+    # produces when the boat is at the LQR trim point). The inversion
+    # offset is chosen so ``estimate_pos_d(trim_wand_angle) ==
+    # natural_pos_d``. The CONTROL TARGET (``pos_d_target``) is the
+    # ride height the PID drives toward — typically the natural trim,
+    # optionally a deeper safety-margin override. When the two differ,
+    # the PID sees a non-zero height_err at trim and integrates until
+    # the boat reaches the requested target.
+    natural_pos_d = float(trim_state[0])
     pos_d_target = (
-        float(target_pos_d) if target_pos_d is not None else float(trim_state[0])
+        float(target_pos_d) if target_pos_d is not None else natural_pos_d
     )
     flap_trim = float(trim_control[0])
 
@@ -604,9 +621,14 @@ def create_pid_wand_config(
     pos_d_est_without_offset = (
         -wand_pivot_z_body - wand_length * np.cos(trim_wand_angle)
     )
-    wand_angle_offset = pos_d_target - pos_d_est_without_offset
+    # Calibrate the inversion offset so estimate_pos_d(trim_wand_angle)
+    # reproduces the *natural* trim pos_d (not the override target).
+    # This way the PID's height_err = pos_d_est - pos_d_target equals
+    # ``natural - target`` at the natural trim, giving the integrator
+    # a non-zero signal to drive toward the requested target.
+    wand_angle_offset = natural_pos_d - pos_d_est_without_offset
 
-    # Sanity check: round-trip identity at trim
+    # Sanity check: round-trip identity at the natural trim wand angle.
     pos_d_check = (
         -wand_pivot_z_body
         - wand_length * np.cos(trim_wand_angle)
@@ -615,10 +637,10 @@ def create_pid_wand_config(
     # ``assert`` is stripped under ``python -O`` and raises the wrong
     # exception type for a public-API precondition — escalate to
     # ``ValueError`` so the round-trip identity is always enforced.
-    if abs(pos_d_check - pos_d_target) > 1e-9:
+    if abs(pos_d_check - natural_pos_d) > 1e-9:
         raise ValueError(
             f"PID wand-angle calibration failed: "
-            f"pos_d_check={pos_d_check}, pos_d_target={pos_d_target}"
+            f"pos_d_check={pos_d_check}, natural_pos_d={natural_pos_d}"
         )
 
     # Anti-windup gain. Aström back-calculation recipe Kb = 1 / Ki when

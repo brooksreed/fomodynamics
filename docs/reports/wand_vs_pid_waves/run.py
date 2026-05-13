@@ -53,6 +53,7 @@ from fmd.simulator.moth_scenarios import (
     create_mechanical_wand_config,
     create_pid_wand_config,
 )
+from fmd.simulator.components.moth_forces import compute_tip_at_surface_pos_d
 from fmd.simulator.params import MOTH_BIEKER_V3
 from fmd.simulator.params.presets import WAVE_SF_BAY_MODERATE
 from fmd.simulator.sweep import sweep_closed_loop, stack_envs
@@ -70,6 +71,26 @@ N_SEEDS_FULL = 50
 N_SEEDS_QUICK = 5
 SINGLE_SEED = 0
 STEADY_START = 10.0       # s — skip the first 10s for steady-state stats
+
+# Deeper PID target: 30 cm below the foil-tip-at-surface depth, leaves a
+# realistic safety margin so the leeward foil tip stays comfortably
+# below the local wave surface under SF Bay moderate waves
+# (Hs ≈ 0.5 m, peak excursion ~0.25 m).
+PID_DEEPER_MARGIN_M = 0.30
+
+# Canonical controller list, used everywhere the plot/aggregation code
+# iterates over kinds.
+CONTROLLERS: tuple[str, ...] = ("mechanical", "pid_natural", "pid_deeper")
+CONTROLLER_COLORS = {
+    "mechanical": "C0",
+    "pid_natural": "C3",
+    "pid_deeper": "C2",
+}
+CONTROLLER_LABELS = {
+    "mechanical": "mechanical wand",
+    "pid_natural": "PID (natural trim)",
+    "pid_deeper": "PID (deeper trim)",
+}
 
 REPORT_GUIDELINES = """\
 ## Physics Guidance for wand_vs_pid_waves Report
@@ -224,6 +245,57 @@ def _saturation_fraction(controls: np.ndarray, u_min: np.ndarray, u_max: np.ndar
 # ---------------------------------------------------------------------------
 
 
+def _target_pos_d_for_kind(controller_kind: str, *, trim_state: np.ndarray) -> float:
+    """Per-controller ride-height setpoint.
+
+    Mirrors the dispatch in :func:`_build_controller_for_kind` — keep
+    the two in sync. Returned value is what each controller is *trying*
+    to hold, used by ``ride_height_rms_around_target``.
+
+    - ``mechanical``: no explicit setpoint; the mechanical linkage's
+      static equilibrium is approximately at the natural trim by
+      construction (``pullrod_offset`` tuned to that point), so we
+      report the natural trim for symmetry with the metric definition.
+    - ``pid_natural``: PID's default target is ``lqr.trim.state[0]``
+      (the natural-trim ride height).
+    - ``pid_deeper``: ``compute_tip_at_surface_pos_d() + PID_DEEPER_MARGIN_M``,
+      matching the override passed into ``create_pid_wand_config``.
+    """
+    if controller_kind == "mechanical":
+        return float(trim_state[0])
+    if controller_kind == "pid_natural":
+        return float(trim_state[0])
+    if controller_kind == "pid_deeper":
+        return float(compute_tip_at_surface_pos_d() + PID_DEEPER_MARGIN_M)
+    raise ValueError(f"Unknown controller_kind: {controller_kind}")
+
+
+def _build_controller_for_kind(lqr, controller_kind: str):
+    """Dispatch to the right factory for one of the three canonical kinds."""
+    if controller_kind == "mechanical":
+        return create_mechanical_wand_config(
+            lqr, params=MOTH_BIEKER_V3, heel_angle=HEEL_ANGLE,
+        )
+    if controller_kind == "pid_natural":
+        return create_pid_wand_config(
+            lqr, params=MOTH_BIEKER_V3, heel_angle=HEEL_ANGLE, dt=DT,
+        )
+    if controller_kind == "pid_deeper":
+        # Deeper-trim PID: parks the leeward foil tip 30 cm *below* the
+        # still-water surface (NED depth positive = submerged), so the
+        # foil keeps a safety margin against ventilation under SF Bay
+        # moderate waves.  In NED, "deeper" means a MORE POSITIVE pos_d
+        # (less negative altitude), so we ADD the margin to the
+        # tip-at-surface pos_d, not subtract.  The plan write-up has the
+        # sign inverted; we flip it here.
+        target_pos_d = compute_tip_at_surface_pos_d() + PID_DEEPER_MARGIN_M
+        return create_pid_wand_config(
+            lqr, params=MOTH_BIEKER_V3, heel_angle=HEEL_ANGLE, dt=DT,
+            target_pos_d=float(target_pos_d),
+        )
+    raise ValueError(f"Unknown controller_kind: {controller_kind}")
+
+
 def run_single_seed(lqr, *, controller_kind: str, wave_seed: int):
     """Run one 60-second simulation with the given controller and wave seed.
 
@@ -231,16 +303,7 @@ def run_single_seed(lqr, *, controller_kind: str, wave_seed: int):
     and the wave-bearing ``Environment`` so callers can post-compute aux
     trajectories (e.g., ``wave_eta_main`` for the dashboard wave panel).
     """
-    if controller_kind == "mechanical":
-        sensor, estimator, controller = create_mechanical_wand_config(
-            lqr, params=MOTH_BIEKER_V3, heel_angle=HEEL_ANGLE,
-        )
-    elif controller_kind == "pid":
-        sensor, estimator, controller = create_pid_wand_config(
-            lqr, params=MOTH_BIEKER_V3, heel_angle=HEEL_ANGLE, dt=DT,
-        )
-    else:
-        raise ValueError(f"Unknown controller_kind: {controller_kind}")
+    sensor, estimator, controller = _build_controller_for_kind(lqr, controller_kind)
 
     moth = Moth3D(
         MOTH_BIEKER_V3,
@@ -287,16 +350,7 @@ def run_single_seed(lqr, *, controller_kind: str, wave_seed: int):
 
 def run_monte_carlo(lqr, *, controller_kind: str, n_seeds: int):
     """Run a vmap-batched 60s sweep over n_seeds wave realizations."""
-    if controller_kind == "mechanical":
-        sensor, estimator, controller = create_mechanical_wand_config(
-            lqr, params=MOTH_BIEKER_V3, heel_angle=HEEL_ANGLE,
-        )
-    elif controller_kind == "pid":
-        sensor, estimator, controller = create_pid_wand_config(
-            lqr, params=MOTH_BIEKER_V3, heel_angle=HEEL_ANGLE, dt=DT,
-        )
-    else:
-        raise ValueError(f"Unknown controller_kind: {controller_kind}")
+    sensor, estimator, controller = _build_controller_for_kind(lqr, controller_kind)
 
     moth = Moth3D(
         MOTH_BIEKER_V3,
@@ -401,7 +455,8 @@ def _wave_eta_main_per_seed(
 def aggregate_mc(result, *, trim_state: np.ndarray, trim_control: np.ndarray,
                  controller_kind: str,
                  u_min: np.ndarray, u_max: np.ndarray,
-                 wave_eta_main: np.ndarray | None = None):
+                 wave_eta_main: np.ndarray | None = None,
+                 target_pos_d: float | None = None):
     """Aggregate the four required metric groups across MC seeds.
 
     Args:
@@ -413,6 +468,12 @@ def aggregate_mc(result, *, trim_state: np.ndarray, trim_control: np.ndarray,
             position. When supplied, the breach metric is computed
             against the *instantaneous* free surface (wave-aware). When
             None, the still-water reference is used (legacy / wave-blind).
+        target_pos_d: Optional per-controller ride-height setpoint.
+            When provided, ``ride_height_rms_around_target`` is computed
+            as RMS deviation from this setpoint (intra-controller
+            stability — the right cross-setpoint comparison). When
+            ``None``, falls back to ``trim_state[0]`` so the metric
+            equals ``ride_height_rms`` by construction.
     """
     true_states = np.asarray(result.true_states[:, 1:, :])    # (N, T, n)
     controls = np.asarray(result.controls)                    # (N, T, m)
@@ -425,9 +486,18 @@ def aggregate_mc(result, *, trim_state: np.ndarray, trim_control: np.ndarray,
     u_fwd = true_states[:, :, 4]
 
     flap_trim = float(trim_control[0])
+    # Per-controller setpoint for the intra-target RMS. Mechanical has no
+    # explicit setpoint; pid_natural's default is the natural trim; only
+    # pid_deeper differs. Falling back to ``trim_state[0]`` makes the new
+    # metric equal the existing ``ride_height_rms`` for mechanical /
+    # pid_natural by construction, which is the desired semantics.
+    target_pos_d_val = (
+        float(target_pos_d) if target_pos_d is not None else float(trim_state[0])
+    )
 
     per_seed = {
         "ride_height_rms": [],
+        "ride_height_rms_around_target": [],
         "ride_height_std": [],
         "ride_height_mean": [],
         "depth_factor_mean": [],
@@ -445,10 +515,16 @@ def aggregate_mc(result, *, trim_state: np.ndarray, trim_control: np.ndarray,
         ctl_k = controls[k]
 
         pd_err = pd_k - float(trim_state[0])
+        # Deviation from the controller's *own* setpoint (intra-target
+        # stability — fair across controllers whose setpoints differ).
+        pd_err_target = pd_k - target_pos_d_val
         th_err = th_k - float(trim_state[1])
 
         # Ride height
         per_seed["ride_height_rms"].append(float(np.sqrt(np.mean(pd_err[ss_idx:] ** 2))))
+        per_seed["ride_height_rms_around_target"].append(
+            float(np.sqrt(np.mean(pd_err_target[ss_idx:] ** 2)))
+        )
         per_seed["ride_height_std"].append(float(np.std(pd_k[ss_idx:])))
         per_seed["ride_height_mean"].append(float(np.mean(pd_k[ss_idx:])))
 
@@ -502,6 +578,7 @@ def aggregate_mc(result, *, trim_state: np.ndarray, trim_control: np.ndarray,
     agg["n_seeds"] = int(n_seeds)
     agg["duration_s"] = float(DURATION)
     agg["steady_state_start_s"] = float(STEADY_START)
+    agg["target_pos_d_m"] = target_pos_d_val
     return agg
 
 
@@ -547,99 +624,121 @@ def make_single_dashboards(out_dir, results_single, systems_single, envs_single,
 
 
 def make_overlay_plots(out_dir, results_single):
-    """Single-seed comparison overlays: ride height, flap command, wand angle."""
+    """Single-seed comparison overlays: ride height, flap command, wand angle.
+
+    Generalised to N controllers via the module-level ``CONTROLLERS``
+    list and ``CONTROLLER_COLORS`` / ``CONTROLLER_LABELS`` maps. Adding
+    a fourth controller only requires extending those three constants.
+    """
     plots_dir = out_dir / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
-    colors = {"mechanical": "C0", "pid": "C3"}
 
-    times = np.asarray(results_single["mechanical"].times)
+    first_kind = next(iter(results_single))
+    times = np.asarray(results_single[first_kind].times)
 
-    # Ride height
-    fig, ax = plt.subplots(figsize=(11, 4))
-    for name, result in results_single.items():
-        pd_ = np.asarray(result.true_states[1:, 0])
-        ax.plot(times, pd_, label=name, color=colors[name], alpha=0.8)
-    ax.set_xlabel("Time (s)"); ax.set_ylabel("pos_d (m, NED)")
-    ax.set_title(f"Ride height — seed {SINGLE_SEED}, SF Bay moderate")
-    ax.legend(); ax.grid(True, alpha=0.3); ax.invert_yaxis()
-    p = plots_dir / "compare_ride_height.png"
-    fig.savefig(p, dpi=110); plt.close(fig); print(f"  saved {p}")
+    def _plot_overlay(extract, ylabel, title, fname, *, invert_y=False):
+        fig, ax = plt.subplots(figsize=(11, 4))
+        for name, result in results_single.items():
+            y = extract(result)
+            if y is None:
+                continue
+            ax.plot(
+                times, y,
+                label=CONTROLLER_LABELS.get(name, name),
+                color=CONTROLLER_COLORS.get(name, None),
+                alpha=0.8,
+            )
+        ax.set_xlabel("Time (s)"); ax.set_ylabel(ylabel)
+        ax.set_title(title)
+        ax.legend(); ax.grid(True, alpha=0.3)
+        if invert_y:
+            ax.invert_yaxis()
+        p = plots_dir / fname
+        fig.savefig(p, dpi=110); plt.close(fig); print(f"  saved {p}")
 
-    # Flap command
-    fig, ax = plt.subplots(figsize=(11, 4))
-    for name, result in results_single.items():
-        flap = np.degrees(np.asarray(result.controls[:, 0]))
-        ax.plot(times, flap, label=name, color=colors[name], alpha=0.8)
-    ax.set_xlabel("Time (s)"); ax.set_ylabel("Main flap (deg)")
-    ax.set_title(f"Flap command — seed {SINGLE_SEED}, SF Bay moderate")
-    ax.legend(); ax.grid(True, alpha=0.3)
-    p = plots_dir / "compare_flap_command.png"
-    fig.savefig(p, dpi=110); plt.close(fig); print(f"  saved {p}")
+    _plot_overlay(
+        lambda r: np.asarray(r.true_states[1:, 0]),
+        "pos_d (m, NED)",
+        f"Ride height — seed {SINGLE_SEED}, SF Bay moderate",
+        "compare_ride_height.png",
+        invert_y=True,
+    )
+    _plot_overlay(
+        lambda r: np.degrees(np.asarray(r.controls[:, 0])),
+        "Main flap (deg)",
+        f"Flap command — seed {SINGLE_SEED}, SF Bay moderate",
+        "compare_flap_command.png",
+    )
+    _plot_overlay(
+        lambda r: (
+            np.degrees(np.asarray(r.measurements_clean[:, 0]))
+            if r.measurements_clean is not None else None
+        ),
+        "Wand angle (deg)",
+        f"Wand angle — seed {SINGLE_SEED}, SF Bay moderate",
+        "compare_wand_angle.png",
+    )
 
-    # Wand angle (from clean measurement)
-    fig, ax = plt.subplots(figsize=(11, 4))
-    for name, result in results_single.items():
-        # measurements_clean shape (T, 1) for wand-only sensors
-        if result.measurements_clean is not None:
-            wand = np.degrees(np.asarray(result.measurements_clean[:, 0]))
-            ax.plot(times, wand, label=name, color=colors[name], alpha=0.8)
-    ax.set_xlabel("Time (s)"); ax.set_ylabel("Wand angle (deg)")
-    ax.set_title(f"Wand angle — seed {SINGLE_SEED}, SF Bay moderate")
-    ax.legend(); ax.grid(True, alpha=0.3)
-    p = plots_dir / "compare_wand_angle.png"
-    fig.savefig(p, dpi=110); plt.close(fig); print(f"  saved {p}")
+
+_BOX_FACECOLORS = {
+    "mechanical": "#cce5ff",
+    "pid_natural": "#ffcccc",
+    "pid_deeper": "#ccffcc",
+}
+
+
+def _add_box(ax, mc_agg, metric_key, *, kinds=CONTROLLERS):
+    """Boxplot one metric across the listed kinds onto ``ax``.
+
+    Generalises the prior two-controller boxplot helper. Returns the
+    matplotlib BoxPlotArtist for downstream face-color tweaks.
+    """
+    data = [mc_agg[k][metric_key]["per_seed"] for k in kinds]
+    labels = [CONTROLLER_LABELS.get(k, k) for k in kinds]
+    bp = ax.boxplot(data, tick_labels=labels, showmeans=True, patch_artist=True)
+    for i, k in enumerate(kinds):
+        bp["boxes"][i].set_facecolor(_BOX_FACECOLORS.get(k, "#dddddd"))
+    # Overlay strip plot
+    for i, d in enumerate(data, start=1):
+        jitter = np.random.RandomState(0).uniform(-0.07, 0.07, len(d))
+        ax.scatter(np.full(len(d), i) + jitter, d, alpha=0.4, s=15,
+                   color="black")
+    return bp
 
 
 def make_mc_distribution_plots(out_dir, mc_agg):
-    """Side-by-side box+strip plots for the four MC metric groups."""
+    """Side-by-side box+strip plots for the four MC metric groups (N kinds)."""
     plots_dir = out_dir / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
+    n_seeds = mc_agg[CONTROLLERS[0]]["n_seeds"]
 
     def _box(metric_key, ylabel, title, fname):
-        fig, ax = plt.subplots(figsize=(7, 5))
-        data = [mc_agg["mechanical"][metric_key]["per_seed"],
-                mc_agg["pid"][metric_key]["per_seed"]]
-        bp = ax.boxplot(data, tick_labels=["mechanical", "pid"],
-                        showmeans=True, patch_artist=True)
-        # Color the two boxes
-        bp["boxes"][0].set_facecolor("#cce5ff")
-        bp["boxes"][1].set_facecolor("#ffcccc")
-        # Overlay strip plot
-        for i, d in enumerate(data, start=1):
-            jitter = np.random.RandomState(0).uniform(-0.07, 0.07, len(d))
-            ax.scatter(np.full(len(d), i) + jitter, d, alpha=0.4, s=15,
-                       color="black")
+        fig, ax = plt.subplots(figsize=(8, 5))
+        _add_box(ax, mc_agg, metric_key)
         ax.set_ylabel(ylabel); ax.set_title(title); ax.grid(True, alpha=0.3)
         p = plots_dir / fname
         fig.savefig(p, dpi=110); plt.close(fig); print(f"  saved {p}")
 
-    _box("ride_height_rms", "Ride height RMS (m)",
-         "Ride height RMS over 50 seeds", "mc_ride_height_rms.png")
+    _box("ride_height_rms", "Ride height RMS vs natural trim (m)",
+         f"Ride height RMS vs natural trim over {n_seeds} seeds",
+         "mc_ride_height_rms.png")
+    _box("ride_height_rms_around_target",
+         "Ride height RMS vs own setpoint (m)",
+         f"Ride height RMS vs own setpoint over {n_seeds} seeds "
+         "(intra-controller stability)",
+         "mc_ride_height_rms_around_target.png")
     _box("breach_count", "Breach count (per 60s)",
-         "Foil tip breach count over 50 seeds", "mc_breach_distribution.png")
+         f"Foil tip breach count over {n_seeds} seeds",
+         "mc_breach_distribution.png")
     _box("flap_rms", "Main flap RMS (rad)",
-         "Main flap RMS over 50 seeds", "mc_flap_activity.png")
+         f"Main flap RMS over {n_seeds} seeds", "mc_flap_activity.png")
 
     # Two-panel for pitch & speed
-    fig, axs = plt.subplots(1, 2, figsize=(11, 5))
-    pitch_data = [
-        mc_agg["mechanical"]["pitch_rms_error"]["per_seed"],
-        mc_agg["pid"]["pitch_rms_error"]["per_seed"],
-    ]
-    speed_data = [
-        mc_agg["mechanical"]["speed_loss_mean"]["per_seed"],
-        mc_agg["pid"]["speed_loss_mean"]["per_seed"],
-    ]
-    bp_p = axs[0].boxplot(pitch_data, tick_labels=["mechanical", "pid"],
-                          showmeans=True, patch_artist=True)
-    bp_p["boxes"][0].set_facecolor("#cce5ff")
-    bp_p["boxes"][1].set_facecolor("#ffcccc")
+    fig, axs = plt.subplots(1, 2, figsize=(12, 5))
+    _add_box(axs[0], mc_agg, "pitch_rms_error")
     axs[0].set_ylabel("Pitch RMS error (rad)")
     axs[0].set_title("Pitch tracking"); axs[0].grid(True, alpha=0.3)
-    bp_s = axs[1].boxplot(speed_data, tick_labels=["mechanical", "pid"],
-                          showmeans=True, patch_artist=True)
-    bp_s["boxes"][0].set_facecolor("#cce5ff")
-    bp_s["boxes"][1].set_facecolor("#ffcccc")
+    _add_box(axs[1], mc_agg, "speed_loss_mean")
     axs[1].set_ylabel("Speed loss (m/s)")
     axs[1].set_title("Forward speed drop from trim")
     axs[1].grid(True, alpha=0.3)
@@ -686,7 +785,7 @@ def main():
     results_single: dict[str, Any] = {}
     systems_single: dict[str, Any] = {}
     envs_single: dict[str, Any] = {}
-    for kind in ("mechanical", "pid"):
+    for kind in CONTROLLERS:
         result, system, env = run_single_seed(
             lqr, controller_kind=kind, wave_seed=SINGLE_SEED,
         )
@@ -708,7 +807,7 @@ def main():
     print(f"\n[3/4] Monte Carlo sweep, n_seeds={n_seeds} ...")
     t0 = time.time()
     mc_results = {}
-    for kind in ("mechanical", "pid"):
+    for kind in CONTROLLERS:
         print(f"  running {kind} ...")
         t_k = time.time()
         mc_results[kind] = run_monte_carlo(
@@ -736,7 +835,7 @@ def main():
     # solely determined by (seed, foil x_ned) and x_ned depends on the
     # state (u, theta). For consistency we compute eta per controller.
     mc_agg = {}
-    for kind in ("mechanical", "pid"):
+    for kind in CONTROLLERS:
         true_states_k = np.asarray(mc_results[kind].true_states[:, 1:, :])
         eta_main = _wave_eta_main_per_seed(
             true_states_k, seeds=seeds, foil_pos=foil_pos
@@ -749,6 +848,7 @@ def main():
             u_min=u_min,
             u_max=u_max,
             wave_eta_main=eta_main,
+            target_pos_d=_target_pos_d_for_kind(kind, trim_state=trim_state),
         )
 
     # 6. Plots
@@ -805,10 +905,12 @@ def main():
 
     # 9. Print headline
     print("\n--- headline numbers (steady-state, mean over seeds) ---")
-    for kind in ("mechanical", "pid"):
+    for kind in CONTROLLERS:
         a = mc_agg[kind]
         print(
-            f"  {kind:10s} ride_height_RMS={a['ride_height_rms']['mean']:.4f}m "
+            f"  {kind:12s} "
+            f"rms_vs_trim={a['ride_height_rms']['mean']:.4f}m "
+            f"rms_vs_target={a['ride_height_rms_around_target']['mean']:.4f}m "
             f"breach_count={a['breach_count']['mean']:.2f} "
             f"flap_RMS={a['flap_rms']['mean']:.4f}rad "
             f"flap_sat={a['flap_saturation_fraction']['mean']*100:.1f}% "
