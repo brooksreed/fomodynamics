@@ -604,7 +604,9 @@ def create_pid_wand_config(
     )
     flap_trim = float(trim_control[0])
 
-    # Inversion constants (trim attitude assumption: theta=0, heel=0)
+    # Inversion formula: -z_p*cos(heel) - L*cos(theta_w) + offset.
+    # The cos(heel) factor makes this pos_d-agnostic under theta=trim_theta
+    # and constant heel. The offset absorbs the trim_theta residual.
     wand_length = DEFAULT_WAND_LENGTH
     wand_pivot_z_body = float(wand_pivot[2])
 

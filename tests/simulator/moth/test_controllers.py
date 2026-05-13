@@ -485,9 +485,10 @@ def test_pid_wand_config_inversion_exact_at_arbitrary_pos_d_with_trim_theta():
 
     # The wand-angle arccos is valid only where the wand doesn't bottom out
     # (angle > 0). For MOTH_BIEKER_V3 at 30° heel and trim theta, the physical
-    # limit is ~15 cm below natural trim. We sweep within the valid range:
-    # 10 cm deeper than trim to 35 cm shallower (higher boat, larger wand angle).
-    for pos_d in np.linspace(natural_pos_d - 0.10, natural_pos_d + 0.35, 9):
+    # limit is ~15 cm below natural trim, so the lower bound is constrained to
+    # −0.10 m (not −0.40 m). The upper bound (+0.40 m, boat shallower/higher)
+    # has no physical constraint — the wand angle is larger but still valid.
+    for pos_d in np.linspace(natural_pos_d - 0.10, natural_pos_d + 0.40, 9):
         wand_angle = float(wand_angle_from_state(
             pos_d=pos_d,
             theta=trim_theta,

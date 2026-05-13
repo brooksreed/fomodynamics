@@ -700,7 +700,7 @@ def _add_box(ax, mc_agg, metric_key, *, kinds=CONTROLLERS):
         bp["boxes"][i].set_facecolor(_BOX_FACECOLORS.get(k, "#dddddd"))
     # Overlay strip plot
     for i, d in enumerate(data, start=1):
-        jitter = np.random.RandomState(0).uniform(-0.07, 0.07, len(d))
+        jitter = np.random.RandomState(0).uniform(-0.07, 0.07, len(d))  # fixed seed for reproducible jitter
         ax.scatter(np.full(len(d), i) + jitter, d, alpha=0.4, s=15,
                    color="black")
     return bp

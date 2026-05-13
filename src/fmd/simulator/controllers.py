@@ -14,6 +14,7 @@ Example:
 
 from __future__ import annotations
 
+import math
 from typing import NamedTuple
 
 import equinox as eqx
@@ -130,7 +131,6 @@ def _pid_pos_d_estimate(
     Returns:
         Estimated pos_d (m, NED).
     """
-    import math
     return (
         -wand_pivot_z * math.cos(heel_angle)
         - wand_length * math.cos(wand_angle)
@@ -207,7 +207,7 @@ class PIDController(eqx.Module):
     elevator_trim: Array
     wand_length: Array
     wand_pivot_z_body: Array
-    heel_angle: eqx.field(static=True)
+    heel_angle: float = eqx.field(static=True)
     wand_angle_offset: Array
     u_min: Array
     u_max: Array
@@ -228,7 +228,6 @@ class PIDController(eqx.Module):
         Returns:
             Estimated ride height ``pos_d`` (m, NED — negative = above water).
         """
-        import math
         # math.cos(heel_angle) is constant at trace time (heel_angle is a
         # Python float stored as a static field, not a JAX array).
         return (
@@ -295,15 +294,10 @@ class PIDController(eqx.Module):
             height_err - self.Kb * u_excess
         ) * self.dt
 
-        # Re-evaluate with the updated integrator so the next-step view
-        # of the actuator command reflects the wind-up correction.
-        u_flap = (
-            self.flap_trim
-            + self.Kp * height_err
-            + self.Ki * integrator_new
-            + self.Kd * derivative
-        )
-        u = jnp.array([u_flap, self.elevator_trim])
+        # Standard Aström back-calculation output: use the saturated
+        # command directly. Outside saturation u_sat_flap == u_unsat_flap;
+        # during saturation u_sat_flap == u_max (or u_min).
+        u = jnp.array([u_sat_flap, self.elevator_trim])
         u = jnp.clip(u, self.u_min, self.u_max)
 
         ctrl_state_new = PIDControllerState(
