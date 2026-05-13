@@ -539,16 +539,26 @@ def create_pid_wand_config(
     Uses ``WandSensor(include_speed_pitch=False)`` + ``PassthroughEstimator``
     + ``PIDController``. The PID acts on a closed-form nonlinear estimate
     of ride height from wand angle (trim-attitude assumption: theta=0,
-    heel=0). At construction time, a ``wand_angle_offset`` calibration is
-    computed so the inversion exactly reproduces ``pos_d_target`` when
-    evaluated at the trim wand angle.
+    constant heel). The inversion formula bakes in ``cos(heel_angle)`` on
+    the body-z pivot component, making it pos_d-agnostic: under
+    ``theta = trim_theta`` and constant heel, the round-trip identity
+    ``estimate_pos_d(wand_angle_from_state(pos_d, trim_theta, heel)) == pos_d``
+    holds for ANY pos_d — not just at the natural trim. This means
+    ``target_pos_d`` overrides work without per-target re-tuning and
+    without steady-state inversion bias.
+
+    The ``wand_angle_offset`` calibration is computed at construction time
+    so the inversion reproduces ``natural_pos_d`` when evaluated at the
+    trim wand angle (absorbing the trim_theta residual). The only remaining
+    bias is dynamic pitch perturbation away from trim_theta, which the
+    integrator averages out.
 
     Args:
         lqr: Pre-computed LQR design (for trim state/control).
         params: MothParams for geometry.
-        heel_angle: Static heel angle used for the sensor (rad).
-            The PID inversion still assumes heel=0 — this argument
-            controls only the wave-aware sensor's geometry.
+        heel_angle: Static heel angle (rad). Used for both the wave-aware
+            sensor geometry and the PID inversion formula (``cos(heel_angle)``
+            factor on the body-z pivot component).
         dt: Simulation timestep, used for the PID integral and derivative.
         Kp, Ki, Kd: PID gains. Defaults are conservative starting values.
         Kb: Anti-windup back-calculation gain. ``None`` (default) selects
@@ -556,20 +566,13 @@ def create_pid_wand_config(
             to ``0.0`` to disable anti-windup.
         target_pos_d: Optional override for the PID's setpoint (m, NED).
             ``None`` (default) uses ``lqr.trim.state[0]`` — the natural
-            trim ride height. When provided, the **inversion is still
-            calibrated against the natural trim wand angle** so the
-            controller has a non-zero height-error signal at startup
-            and integrates the boat toward the override. The
-            round-trip identity at the natural trim is
-            ``estimate_pos_d(trim_wand_angle) == natural_trim_pos_d``;
-            ``height_err = natural_pos_d - target_pos_d`` at trim
-            drives the integrator. Once the boat settles around the
-            new target, the inversion is no longer "exact at trim"
-            (the boat is no longer at the natural-trim wand angle) but
-            the PID achieves zero steady-state error against
-            ``target_pos_d``. Use this kwarg to set a safety margin
-            below the natural trim, e.g.
-            ``target_pos_d = compute_tip_at_surface_pos_d() + 0.30``
+            trim ride height. When provided, the inversion is still
+            calibrated against the natural trim wand angle, but the new
+            pos_d-agnostic formula means the PID accurately tracks any
+            ``target_pos_d`` under theta=trim_theta without the 15 cm
+            steady-state bias that the old heel=0 formula produced.
+            Use this kwarg to set a safety margin below the natural trim,
+            e.g. ``target_pos_d = compute_tip_at_surface_pos_d() + 0.30``
             (NB: in NED-positive-down, deeper = MORE POSITIVE pos_d,
             so use ``+ margin``, not ``- margin``).
 
@@ -618,8 +621,15 @@ def create_pid_wand_config(
             heel_angle=heel_angle,
         )
     )
+    # Inversion formula: -z_p*cos(heel) - L*cos(theta_w) + offset.
+    # The cos(heel) factor on z_p makes this pos_d-agnostic: under
+    # theta=trim_theta and constant heel, estimate_pos_d(wand_angle_from_state(
+    # pos_d, trim_theta, heel)) == pos_d for any pos_d. The offset absorbs
+    # the trim_theta residual (z_p*cos(heel)*(cos(theta_trim)-1) and
+    # -x_p*sin(theta_trim)) so bias is zero at the operating point.
+    # NOTE: cos(heel) goes on z_p ONLY — L*cos(theta_w) is unchanged.
     pos_d_est_without_offset = (
-        -wand_pivot_z_body - wand_length * np.cos(trim_wand_angle)
+        -wand_pivot_z_body * np.cos(heel_angle) - wand_length * np.cos(trim_wand_angle)
     )
     # Calibrate the inversion offset so estimate_pos_d(trim_wand_angle)
     # reproduces the *natural* trim pos_d (not the override target).
@@ -630,7 +640,7 @@ def create_pid_wand_config(
 
     # Sanity check: round-trip identity at the natural trim wand angle.
     pos_d_check = (
-        -wand_pivot_z_body
+        -wand_pivot_z_body * np.cos(heel_angle)
         - wand_length * np.cos(trim_wand_angle)
         + wand_angle_offset
     )
@@ -662,6 +672,7 @@ def create_pid_wand_config(
         elevator_trim=jnp.array(elevator_trim),
         wand_length=jnp.array(wand_length),
         wand_pivot_z_body=jnp.array(wand_pivot_z_body),
+        heel_angle=float(heel_angle),
         wand_angle_offset=jnp.array(wand_angle_offset),
         u_min=u_min,
         u_max=u_max,

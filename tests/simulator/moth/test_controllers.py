@@ -11,6 +11,7 @@ from fmd.simulator.controllers import (
     LQRController,
     MechanicalWandController,
     PIDController,
+    _pid_pos_d_estimate,
 )
 from fmd.simulator.moth_lqr import design_moth_lqr
 from fmd.simulator.moth_3d import MAIN_FLAP_MIN, MAIN_FLAP_MAX
@@ -47,6 +48,7 @@ def _replace_gains(
         elevator_trim=controller.elevator_trim,
         wand_length=controller.wand_length,
         wand_pivot_z_body=controller.wand_pivot_z_body,
+        heel_angle=controller.heel_angle,
         wand_angle_offset=controller.wand_angle_offset,
         u_min=controller.u_min,
         u_max=controller.u_max,
@@ -454,4 +456,55 @@ class TestPIDController:
         assert abs(ints2[-1]) > 10.0 * abs(ints2[0]), (
             f"Without anti-windup, integrator should grow significantly: "
             f"no_aw_first={ints2[0]}, no_aw_final={ints2[-1]}"
+        )
+
+
+def test_pid_wand_config_inversion_exact_at_arbitrary_pos_d_with_trim_theta():
+    """With heel baked in and offset calibrated at trim, the inversion is
+    pos_d-agnostic under theta = trim_theta.
+
+    Sweep pos_d over a wide range, forward-map to wand angle at trim_theta
+    and constant heel, then inversion-map back. The result must match the
+    starting pos_d to within numerical tolerance.
+
+    This tests the mathematical guarantee of the cos(heel) formula:
+    estimate_pos_d(wand_angle_from_state(pos_d, trim_theta, heel)) == pos_d
+    for ANY pos_d, not just at the natural trim.
+    """
+    from fmd.simulator.moth_scenarios import create_pid_wand_config
+
+    lqr = design_moth_lqr(u_forward=10.0)
+    heel = np.deg2rad(30.0)
+    sensor, estimator, controller = create_pid_wand_config(
+        lqr, params=MOTH_BIEKER_V3, heel_angle=heel
+    )
+
+    trim_theta = float(lqr.trim.state[1])
+    pivot = jnp.asarray(MOTH_BIEKER_V3.wand_pivot_position)
+    natural_pos_d = float(lqr.trim.state[0])
+
+    # The wand-angle arccos is valid only where the wand doesn't bottom out
+    # (angle > 0). For MOTH_BIEKER_V3 at 30° heel and trim theta, the physical
+    # limit is ~15 cm below natural trim. We sweep within the valid range:
+    # 10 cm deeper than trim to 35 cm shallower (higher boat, larger wand angle).
+    for pos_d in np.linspace(natural_pos_d - 0.10, natural_pos_d + 0.35, 9):
+        wand_angle = float(wand_angle_from_state(
+            pos_d=pos_d,
+            theta=trim_theta,
+            wand_pivot_position=pivot,
+            wand_length=DEFAULT_WAND_LENGTH,
+            heel_angle=heel,
+        ))
+        # Call the same math the PID uses at runtime — exercises the
+        # exact formula, not a re-derivation.
+        pos_d_est = _pid_pos_d_estimate(
+            wand_angle,
+            wand_pivot_z=float(pivot[2]),
+            wand_length=DEFAULT_WAND_LENGTH,
+            heel_angle=heel,
+            wand_angle_offset=float(controller.wand_angle_offset),
+        )
+        assert abs(pos_d_est - pos_d) < 1e-6, (
+            f"Inversion not exact at pos_d={pos_d:.4f}: "
+            f"estimated {pos_d_est:.6f}, error {pos_d_est - pos_d:.2e}"
         )
