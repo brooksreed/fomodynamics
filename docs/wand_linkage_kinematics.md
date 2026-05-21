@@ -60,7 +60,7 @@ The lever angle from vertical is `(θ_w - fastpoint)`. The horizontal
 displacement of the lever tip (= pullrod displacement) is:
 
 $$
-\text{pullrod\_dx} = L_w \cdot \sin(\theta_w - \theta_{fp}) + \text{offset}
+dx_{\text{pullrod}} = L_w \cdot \sin(\theta_w - \theta_{fp}) + \text{offset}
 $$
 
 where:
@@ -90,13 +90,13 @@ rod, and the bellcrank pullrod (output) taps off at an adjustable point along
 the rod (default: 130 mm). The output displacement is a fraction of the input:
 
 $$
-\text{gearing\_ratio} = \frac{\text{tap\_position}}{\text{rod\_length}} = \frac{130}{170} \approx 0.765
+g = \frac{\ell_{\text{tap}}}{\ell_{\text{rod}}} = \frac{130}{170} \approx 0.765
 $$
 
 Adjustable range: 100/170 ≈ 0.588 to 150/170 ≈ 0.882.
 
 $$
-\text{aft\_pullrod\_dx} = \text{pullrod\_dx} \times \text{gearing\_ratio}
+dx_{\text{aft}} = dx_{\text{pullrod}} \times g
 $$
 
 ---
@@ -119,7 +119,7 @@ As the pullrod pushes the input arm tip horizontally by dx, the bellcrank
 rotates by angle φ:
 
 $$
-\phi = \arcsin\!\left(\frac{\text{aft\_pullrod\_dx}}{L_p}\right)
+\phi = \arcsin\!\left(\frac{dx_{\text{aft}}}{L_p}\right)
 $$
 
 where:
@@ -156,7 +156,7 @@ this arc along the pushrod axis.
 General formula for the pushrod displacement:
 
 $$
-\text{pushrod\_dy} = L_v \cdot \left[\cos(\alpha - \phi) - \cos(\alpha)\right]
+dy_{\text{pushrod}} = L_v \cdot \left[\cos(\alpha - \phi) - \cos(\alpha)\right]
 $$
 
 where:
@@ -166,7 +166,7 @@ where:
 **Special case α = 90° (default):**
 
 $$
-\text{pushrod\_dy} = L_v \cdot \sin(\phi)
+dy_{\text{pushrod}} = L_v \cdot \sin(\phi)
 $$
 
 since cos(90° - φ) = sin(φ) and cos(90°) = 0.
@@ -174,7 +174,7 @@ since cos(90° - φ) = sin(φ) and cos(90°) = 0.
 This simplifies the bellcrank to a **linear passthrough** when L_p = L_v:
 
 $$
-\text{pushrod\_dy} = L_v \cdot \sin\!\left(\arcsin\!\left(\frac{dx}{L_p}\right)\right) = \frac{L_v}{L_p} \cdot dx
+dy_{\text{pushrod}} = L_v \cdot \sin\!\left(\arcsin\!\left(\frac{dx}{L_p}\right)\right) = \frac{L_v}{L_p} \cdot dx
 $$
 
 With equal arms (L_p = L_v = 30 mm): pushrod_dy = dx. The bellcrank just
@@ -202,7 +202,7 @@ lever converts linear pushrod displacement to flap rotation.
 ```
 
 $$
-\text{flap\_angle} = \arcsin\!\left(\frac{\text{pushrod\_dy}}{L_f}\right)
+\theta_{\text{flap}} = \arcsin\!\left(\frac{dy_{\text{pushrod}}}{L_f}\right)
 $$
 
 where:

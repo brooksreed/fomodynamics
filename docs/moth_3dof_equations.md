@@ -73,11 +73,11 @@ where $\mathbf{r} = [r_x, r_y, r_z]$ is the position vector from CG to the force
 
 ### 2.1 State Vector
 
-$$\mathbf{x} = \begin{bmatrix} \text{pos\_d} \\ \theta \\ w \\ q \\ u \end{bmatrix}$$
+$$\mathbf{x} = \begin{bmatrix} \text{pos}_d \\ \theta \\ w \\ q \\ u \end{bmatrix}$$
 
 | Index | Symbol | Name | Units | Convention |
 |-------|--------|------|-------|------------|
-| 0 | $\text{pos\_d}$ | Vertical position (heave) | m | Positive down in NED |
+| 0 | $\text{pos}_d$ | Vertical position (heave) | m | Positive down in NED |
 | 1 | $\theta$ | Pitch angle | rad | Positive nose-up |
 | 2 | $w$ | Body-frame vertical velocity | m/s | Positive down |
 | 3 | $q$ | Body-frame pitch rate | rad/s | Positive nose-up about $+y$ |
@@ -123,13 +123,13 @@ The state derivative $\dot{\mathbf{x}} = f(\mathbf{x}, \mathbf{u}, t)$ is comput
 
 ### 3.1 Kinematics
 
-$$\dot{\text{pos\_d}} = -u_{\text{fwd}} \sin\theta + w \cos\theta - \dot{r}_{\text{cg},x}\sin\theta + \dot{r}_{\text{cg},z}\cos\theta$$
+$$\dot{\text{pos}}_d = -u_{\text{fwd}} \sin\theta + w \cos\theta - \dot{r}_{\text{cg},x}\sin\theta + \dot{r}_{\text{cg},z}\cos\theta$$
 
 $$\dot{\theta} = q$$
 
 The first equation projects body-frame velocities into the NED down-axis and includes CG-motion terms from a time-varying sailor position schedule. If the sailor schedule is static, $\dot{\mathbf{r}}_{\text{cg}}=\mathbf{0}$ and the equation reduces to the simpler form:
 
-$$\dot{\text{pos\_d}} = -u_{\text{fwd}} \sin\theta + w \cos\theta$$
+$$\dot{\text{pos}}_d = -u_{\text{fwd}} \sin\theta + w \cos\theta$$
 
 ### 3.2 Dynamics
 
@@ -137,7 +137,7 @@ $$\dot{w} = \frac{F_{z,\text{total}}}{m_{\text{eff,heave}}} + q \cdot u_{\text{f
 
 $$\dot{q} = \frac{M_{y,\text{total}}}{I_{\text{eff}}}$$
 
-$$\dot{u} = \begin{cases} \frac{F_{x,\text{total}}}{m_{\text{eff,surge}}} - q \cdot w & \text{if surge\_enabled} \\ 0 & \text{otherwise} \end{cases}$$
+$$\dot{u} = \begin{cases} \frac{F_{x,\text{total}}}{m_{\text{eff,surge}}} - q \cdot w & \text{if surge enabled} \\ 0 & \text{otherwise} \end{cases}$$
 
 where the effective masses and inertia include added mass effects:
 
@@ -368,7 +368,7 @@ The full cross product $\mathbf{r} \times \mathbf{F}$ is required because the NE
 
 **Immersion model:**
 
-$$\text{immersion} = \max(0, \; \text{pos\_d} + d_{\text{contact}})$$
+$$\text{immersion} = \max(0, \; \text{pos}_d + d_{\text{contact}})$$
 
 where $d_{\text{contact}}$ = `contact_depth` (default 0.94 m, the system CG-to-hull-bottom distance in body frame, computed dynamically as `hull_cg_above_bottom - cg_offset[2]`). The hull bottom is at NED depth `pos_d + contact_depth`. Hull drag is active when this is positive (hull bottom below the water surface), i.e., when `pos_d > -contact_depth`.
 
@@ -476,7 +476,7 @@ The depth factor $f_{\text{depth}} \in [0, 1]$ models lift reduction as a foil a
 
 ### 5.1 Foil Depth
 
-$$d_{\text{foil}} = \text{pos\_d} + r_z \cos(\phi) \cos(\theta) - r_x \sin\theta$$
+$$d_{\text{foil}} = \text{pos}_d + r_z \cos(\phi) \cos(\theta) - r_x \sin\theta$$
 
 where $r_z$ = `position_z` is the foil's z-offset below the CG, $r_x$ = `position_x` is the foil's x-offset forward of the CG, and $\phi$ is the static heel angle. This is the z-row of the rotation matrix $R = R_y(\theta) R_x(\phi)$ applied to the body-frame point $[r_x, 0, r_z]$. The $\cos(\phi)\cos(\theta)$ factor accounts for both heel and pitch reducing the vertical projection of the body z-axis. The $-r_x \sin\theta$ term is the **pitch-corrected depth**: when the body pitches, foils at different longitudinal positions move vertically. See `compute_foil_ned_depth()` in `moth_forces.py` for the canonical implementation.
 
@@ -559,8 +559,8 @@ The `Moth3D` model defaults to a **30 deg** static heel angle (`heel_angle = np.
 **Configurable:** The heel angle can be set to any value via `Moth3D(params, heel_angle=...)`. The model works correctly at all heel angles from 0 to 90 deg.
 
 **Foil ventilation ordering at 30 deg:**
-- Main foil ($S = 1.0$ m, $r_z = 0.60$ m): tip breach at $\text{pos\_d} \approx -0.35$ m
-- Rudder ($S = 0.7$ m, $r_z = 0.50$ m): tip breach at $\text{pos\_d} \approx -0.325$ m
+- Main foil ($S = 1.0$ m, $r_z = 0.60$ m): tip breach at $\text{pos}_d \approx -0.35$ m
+- Rudder ($S = 0.7$ m, $r_z = 0.50$ m): tip breach at $\text{pos}_d \approx -0.325$ m
 - The main foil starts to ventilate just before the rudder, matching physical expectations for a Moth (the main foil's larger span causes its windward tip to breach first).
 
 ### 5.7 Application to Components
@@ -587,11 +587,11 @@ The table below captures the current status of key geometry-dependent computatio
 
 **Definition:** Trim is the steady-state condition where all state derivatives are zero:
 
-$$\dot{\mathbf{x}} = \mathbf{0} \implies \dot{\text{pos\_d}} = 0, \quad \dot{\theta} = 0, \quad \dot{w} = 0, \quad \dot{q} = 0, \quad \dot{u} = 0$$
+$$\dot{\mathbf{x}} = \mathbf{0} \implies \dot{\text{pos}}_d = 0, \quad \dot{\theta} = 0, \quad \dot{w} = 0, \quad \dot{q} = 0, \quad \dot{u} = 0$$
 
 ### 6.1 Kinematic Constraint (Standard Static-Sailor Case)
 
-From $\dot{\text{pos\_d}} = -u \sin\theta + w \cos\theta = 0$:
+From $\dot{\text{pos}}_d = -u \sin\theta + w \cos\theta = 0$:
 
 $$w = u \cdot \frac{\sin\theta}{\cos\theta} = u \cdot \tan\theta$$
 
@@ -625,7 +625,7 @@ This x-force balance (thrust = drag) is the key constraint for sail thrust calib
 
 | Variable | Role | Bounds |
 |----------|------|--------|
-| $\text{pos\_d}$ | Free | $[-0.6, 0.5]$ m |
+| $\text{pos}_d$ | Free | $[-0.6, 0.5]$ m |
 | $\theta$ | Free | $[-0.3, 0.3]$ rad ($\approx \pm 17°$) |
 | $u$ | Free (surge) | $[u_{\text{target}} \pm 0.5]$ m/s |
 | $\delta_{\text{flap}}$ | Free | $[-0.1745, 0.2618]$ rad |
@@ -738,10 +738,10 @@ Results are stored as JSON metadata + NPZ trajectories for reproducible report a
 - Flap offset (elevator free): $\pm 2°, \pm 5°, \pm 8°$ (6 tests)
 - Elevator offset (flap free): $\pm 1°, \pm 2°$ (4 tests)
 
-**Metrics:** Change in trim state ($\Delta \theta$, $\Delta \text{pos\_d}$) and trim control.
+**Metrics:** Change in trim state ($\Delta \theta$, $\Delta \text{pos}_d$) and trim control.
 
 **Expected physics:**
-- **Flap positive** (more main foil lift): System needs less angle of attack $\to$ $\theta$ decreases. The additional lift also raises ride height $\to$ $\text{pos\_d}$ decreases.
+- **Flap positive** (more main foil lift): System needs less angle of attack $\to$ $\theta$ decreases. The additional lift also raises ride height $\to$ $\text{pos}_d$ decreases.
 - **Elevator positive** (more rudder lift): Aft lift increase creates nose-down moment $\to$ $\theta$ decreases.
 - **Monotonic:** Larger offset $\to$ larger equilibrium shift.
 - **Sailor position schedule effects:** The current model computes CG offset and composite inertia from sailor position, so sailor changes can affect trim through geometry and inertia coupling. (There is still no explicit separate gravity moment term about CG because gravity is applied at system CG by construction.)
@@ -830,11 +830,11 @@ Therefore $\alpha \propto 1/u^2$, and since $\theta \approx \alpha$ at trim, tri
 **Sweep:** 10$\to$8 m/s, 10$\to$12 m/s, 10$\to$14 m/s (3 tests)
 
 **Expected physics:**
-- **Speed drop (10$\to$8):** Lift drops to $(8/10)^2 = 64\%$ of weight $\to$ net downward force $\to$ boat sinks ($\text{pos\_d}$ increases initially)
-- **Speed increase (10$\to$12):** Lift rises to $(12/10)^2 = 144\%$ of weight $\to$ net upward force $\to$ boat rises ($\text{pos\_d}$ decreases initially)
+- **Speed drop (10$\to$8):** Lift drops to $(8/10)^2 = 64\%$ of weight $\to$ net downward force $\to$ boat sinks ($\text{pos}_d$ increases initially)
+- **Speed increase (10$\to$12):** Lift rises to $(12/10)^2 = 144\%$ of weight $\to$ net upward force $\to$ boat rises ($\text{pos}_d$ decreases initially)
 - **Speed increase (10$\to$14):** Even larger effect, $(14/10)^2 = 196\%$
 
 **Pass criteria:**
-- Speed drop: $\text{pos\_d}$ increases in early response
-- Speed increase: $\text{pos\_d}$ decreases in early response
+- Speed drop: $\text{pos}_d$ increases in early response
+- Speed increase: $\text{pos}_d$ decreases in early response
 - Larger speed change $\to$ larger initial response
