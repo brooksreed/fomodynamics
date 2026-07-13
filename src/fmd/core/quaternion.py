@@ -75,7 +75,12 @@ def quat_normalize(q: ArrayLike) -> NDArray:
 def quat_derivative(q: ArrayLike, omega: ArrayLike) -> NDArray:
     """Quaternion derivative from angular velocity.
 
-    Computes q̇ = 0.5 * Ω ⊗ q where Ω = [0, ωx, ωy, ωz]
+    Computes q̇ = 0.5 * q ⊗ Ω where Ω = [0, ωx, ωy, ωz].
+
+    The convention is body→NED (v_ned = R(q) v_body), and ω is in the BODY
+    frame, so ω multiplies on the RIGHT. (The world-frame form 0.5 * Ω ⊗ q
+    agrees only for single-axis motion; using it here was the physics-review
+    §3.1 bug.)
 
     Args:
         q: Current quaternion [qw, qx, qy, qz]
@@ -90,8 +95,8 @@ def quat_derivative(q: ArrayLike, omega: ArrayLike) -> NDArray:
     # Omega as quaternion [0, ωx, ωy, ωz]
     omega_quat = np.array([0.0, omega[0], omega[1], omega[2]])
 
-    # q̇ = 0.5 * omega_quat ⊗ q
-    return 0.5 * quat_multiply(omega_quat, q)
+    # q̇ = 0.5 * q ⊗ omega_quat  (body-frame ω → right multiply)
+    return 0.5 * quat_multiply(q, omega_quat)
 
 
 def quat_to_dcm(q: ArrayLike) -> NDArray:

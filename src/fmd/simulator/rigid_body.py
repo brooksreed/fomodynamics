@@ -54,7 +54,7 @@ class RigidBody6DOFJax(JaxDynamicSystem):
     Equations of motion:
         ṗ = R(q) * v           (position derivative)
         v̇ = F/m - ω × v        (velocity derivative)
-        q̇ = 0.5 * Ω ⊗ q        (quaternion derivative)
+        q̇ = 0.5 * q ⊗ Ω        (quaternion derivative, body-frame ω on the right)
         ω̇ = I⁻¹(M - ω × Iω)    (angular velocity derivative)
 
     Uses the "Force Accumulator" pattern where external components
