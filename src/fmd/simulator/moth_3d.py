@@ -512,14 +512,14 @@ class Moth3D(JaxDynamicSystem):
             orb_main_ned = env.wave_field.orbital_velocity(x_main_ned, 0.0, main_foil_z_ned, t)
             orb_rudder_ned = env.wave_field.orbital_velocity(x_rudder_ned, 0.0, rudder_foil_z_ned, t)
 
-            # NED -> body frame rotation: Ry(theta)
-            # body_x =  ned_n * cos(theta) + ned_d * sin(theta)
-            # body_z = -ned_n * sin(theta) + ned_d * cos(theta)
-            u_orbital_body_main = orb_main_ned[0] * cos_theta + orb_main_ned[2] * sin_theta
-            w_orbital_body_main = -orb_main_ned[0] * sin_theta + orb_main_ned[2] * cos_theta
+            # NED -> body frame rotation: Ry(theta)^T (inverse of body->NED)
+            # body_x =  ned_n * cos(theta) - ned_d * sin(theta)
+            # body_z =  ned_n * sin(theta) + ned_d * cos(theta)
+            u_orbital_body_main = orb_main_ned[0] * cos_theta - orb_main_ned[2] * sin_theta
+            w_orbital_body_main = orb_main_ned[0] * sin_theta + orb_main_ned[2] * cos_theta
 
-            u_orbital_body_rudder = orb_rudder_ned[0] * cos_theta + orb_rudder_ned[2] * sin_theta
-            w_orbital_body_rudder = -orb_rudder_ned[0] * sin_theta + orb_rudder_ned[2] * cos_theta
+            u_orbital_body_rudder = orb_rudder_ned[0] * cos_theta - orb_rudder_ned[2] * sin_theta
+            w_orbital_body_rudder = orb_rudder_ned[0] * sin_theta + orb_rudder_ned[2] * cos_theta
         else:
             eta_main = 0.0
             eta_rudder = 0.0
@@ -598,14 +598,15 @@ class Moth3D(JaxDynamicSystem):
         # ------------------------------------------------------------------
         # Aux: AoA and aero coefficients (uses effective flow speed)
         # ------------------------------------------------------------------
-        u_eff_main = u_safe + u_orbital_body_main
-        u_eff_rudder = u_safe + u_orbital_body_rudder
+        # Flow speed relative to the water (v_rel = v_foil - v_water).
+        u_eff_main = u_safe - u_orbital_body_main
+        u_eff_rudder = u_safe - u_orbital_body_rudder
 
-        w_local_main = state[W] - state[Q] * eff_main_x + w_orbital_body_main
+        w_local_main = state[W] - state[Q] * eff_main_x - w_orbital_body_main
         main_alpha_geo = jnp.arctan2(w_local_main, u_eff_main)
         main_alpha_eff = self.main_foil.flap_effectiveness * control[MAIN_FLAP] + w_local_main / u_eff_main
 
-        w_local_rudder = state[W] - state[Q] * eff_rudder_x + w_orbital_body_rudder
+        w_local_rudder = state[W] - state[Q] * eff_rudder_x - w_orbital_body_rudder
         rudder_alpha_geo = jnp.arctan2(w_local_rudder, u_eff_rudder)
         rudder_alpha_eff = control[RUDDER_ELEVATOR] + w_local_rudder / u_eff_rudder
 
@@ -783,11 +784,11 @@ class Moth3D(JaxDynamicSystem):
             alpha_filt_rudder = state[6]
 
             main_cl_filt = (self.main_foil.cl0 + self.main_foil.cl_alpha * alpha_filt_main) * terms.main_df
-            main_lift_filtered = (0.5 * self.rho_water * (terms.u_safe + terms.wave_u_orbital_main) ** 2
+            main_lift_filtered = (0.5 * self.rho_water * (terms.u_safe - terms.wave_u_orbital_main) ** 2
                                   * self.main_foil.area * main_cl_filt)
 
             rudder_cl_filt = self.rudder.cl_alpha * alpha_filt_rudder * terms.rudder_df
-            rudder_lift_filtered = (0.5 * self.rho_water * (terms.u_safe + terms.wave_u_orbital_rudder) ** 2
+            rudder_lift_filtered = (0.5 * self.rho_water * (terms.u_safe - terms.wave_u_orbital_rudder) ** 2
                                     * self.rudder.area * rudder_cl_filt)
 
             aux = jnp.concatenate([aux, jnp.array([

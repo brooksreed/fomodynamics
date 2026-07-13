@@ -133,8 +133,13 @@ class TestComputeFoilNedDepth:
         np.testing.assert_allclose(physics_depth, viz_depth, atol=1e-12,
                                    err_msg="Physics and viz depth disagree")
 
-    def test_eta_subtracts_from_depth(self):
-        """Wave elevation reduces effective depth (foil shallower on crest)."""
+    def test_eta_adds_to_depth(self):
+        """Wave crest raises the local surface, so a submerged foil is DEEPER.
+
+        NED depth is measured below the local (wave) surface at D = -eta, so a
+        crest (eta > 0) enters depth as +eta. (Corrected in C1.A; the previous
+        assertion pinned the inverted ETA-DEPTH bug.)
+        """
         pos_d = -0.3
         x, z = 0.6, 0.6
         theta = 0.0
@@ -143,5 +148,5 @@ class TestComputeFoilNedDepth:
         depth_no_wave = float(compute_foil_ned_depth(pos_d, x, z, theta, heel))
         depth_crest = float(compute_foil_ned_depth(pos_d, x, z, theta, heel, eta=0.1))
 
-        assert depth_crest < depth_no_wave, "Crest should make foil shallower"
-        np.testing.assert_allclose(depth_no_wave - depth_crest, 0.1, atol=1e-12)
+        assert depth_crest > depth_no_wave, "Crest should make foil deeper"
+        np.testing.assert_allclose(depth_crest - depth_no_wave, 0.1, atol=1e-12)

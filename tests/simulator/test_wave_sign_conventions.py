@@ -2,8 +2,11 @@
 
 Verifies that wave crest/trough produce correct physical effects:
 - NED: positive down, wave elevation positive up
-- Crest (eta > 0): surface higher, foil shallower (less submerged)
-- Trough (eta < 0): surface lower, foil deeper (more submerged)
+- Crest (eta > 0): local surface rises, a submerged foil is DEEPER below it
+- Trough (eta < 0): local surface drops, a submerged foil is shallower
+
+Directional locks for this coupling live in
+``test_wave_channel_directional.py`` (roadmap chunk C1.A).
 """
 import pytest
 import jax.numpy as jnp

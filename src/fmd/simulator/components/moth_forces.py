@@ -71,7 +71,7 @@ def compute_foil_ned_depth(
     Applies the z-row of the rotation matrix R = Ry(theta) @ Rx(heel)
     to a body-frame point [x, 0, z] (y=0, centerline foil):
 
-        depth_ned = pos_d + z * cos(heel) * cos(theta) - x * sin(theta) - eta
+        depth_ned = pos_d + z * cos(heel) * cos(theta) - x * sin(theta) + eta
 
     This is the single source of truth for foil depth in the Moth 3DOF model.
     The viz geometry code (geometry.py compute_surface_waterline) uses the
@@ -83,7 +83,9 @@ def compute_foil_ned_depth(
         eff_pos_z: Foil z-position relative to system CG (m), FRD body frame.
         theta: Pitch angle (rad).
         heel_angle: Static heel angle (rad).
-        eta: Wave surface elevation at foil position (m). Default 0.
+        eta: Wave surface elevation at foil position (m), positive up. Default 0.
+            The local surface sits at NED depth ``-eta``, so a crest (eta > 0)
+            makes a submerged foil DEEPER: it enters depth as ``+ eta``.
 
     Returns:
         NED depth of foil center (m). Positive = submerged.
@@ -91,7 +93,7 @@ def compute_foil_ned_depth(
     return (pos_d
             + eff_pos_z * jnp.cos(heel_angle) * jnp.cos(theta)
             - eff_pos_x * jnp.sin(theta)
-            - eta)
+            + eta)
 
 
 def compute_leeward_tip_depth(
@@ -334,14 +336,15 @@ class MothMainFoil(JaxForceElement):
 
         u_safe = jnp.maximum(u_forward, 0.1)
 
-        # Effective flow speed including horizontal orbital velocity
-        u_eff = jnp.maximum(u_safe + u_orbital_body, 0.1)
+        # Effective flow speed relative to the water: subtract the water's
+        # orbital velocity (v_rel = v_foil - v_water).
+        u_eff = jnp.maximum(u_safe - u_orbital_body, 0.1)
 
         # Local vertical flow and angle-of-attack separation
         # alpha_geo: geometric flow angle (for force rotation)
         # alpha_eff: effective AoA including control (for polar)
         q = state[Q]
-        w_local = w - q * eff_pos_x + w_orbital_body
+        w_local = w - q * eff_pos_x - w_orbital_body
         alpha_geo = jnp.arctan2(w_local, u_eff)
         alpha_eff_inst = self.flap_effectiveness * main_flap + w_local / u_eff
 
@@ -486,11 +489,12 @@ class MothRudderElevator(JaxForceElement):
 
         u_safe = jnp.maximum(u_forward, 0.1)
 
-        # Effective flow speed including horizontal orbital velocity
-        u_eff = jnp.maximum(u_safe + u_orbital_body, 0.1)
+        # Effective flow speed relative to the water: subtract the water's
+        # orbital velocity (v_rel = v_foil - v_water).
+        u_eff = jnp.maximum(u_safe - u_orbital_body, 0.1)
 
         # Local vertical flow and angle-of-attack separation
-        w_local = w - q * eff_pos_x + w_orbital_body
+        w_local = w - q * eff_pos_x - w_orbital_body
         alpha_geo = jnp.arctan2(w_local, u_eff)
         alpha_eff_inst = rudder_elevator_angle + w_local / u_eff
 
