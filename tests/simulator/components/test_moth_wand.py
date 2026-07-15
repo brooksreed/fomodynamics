@@ -11,6 +11,7 @@ from fmd.simulator.components.moth_wand import (
     _safe_arccos,
     wand_angle_from_state,
     wand_angle_from_state_waves,
+    wand_world_angle_from_height,
     create_wand_linkage,
     gearing_ratio_from_rod,
     DEFAULT_WAND_LENGTH,
@@ -642,8 +643,13 @@ class TestWandAngleWaveAware:
                     assert jnp.isfinite(result), (
                         f"NaN at pos_d={pos_d_val}, theta={theta_val}, t={t}"
                     )
-                    # Angle should be in valid range
-                    assert 0.0 <= float(result) <= np.pi / 2 + 1e-10
+                    # Hull-relative angle: world part in [0, pi/2], minus theta
+                    # (§4.6), so the valid range shifts by -theta.
+                    assert (
+                        -theta_val - 1e-10
+                        <= float(result)
+                        <= np.pi / 2 - theta_val + 1e-10
+                    )
 
     # --- JIT and grad compatibility ---
 
@@ -696,3 +702,159 @@ class TestWandAngleWaveAware:
         assert jnp.isfinite(result_low)
         # Should be near pi/2 (horizontal)
         assert float(result_low) > np.pi / 3
+
+
+# ---------------------------------------------------------------------------
+# TestWandHullFrame (§4.6 hull-fixed wand angle)
+# ---------------------------------------------------------------------------
+
+class TestWandHullFrame:
+    """Wand angle is hull-relative: theta_w_hull = theta_w_world - theta.
+
+    The mechanical linkage housing is bolted to the hull, so at pitch theta the
+    angle that drives the flap differs from the world-vertical geometry by
+    exactly theta (longitudinal plane). This restores the pitch-feedback path
+    (flap error ~ gain*theta) the world-vertical convention deleted (§4.6).
+    """
+
+    @pytest.fixture
+    def origin_pivot(self):
+        """Pivot at CG origin: pivot depth == pos_d, independent of pitch.
+
+        Isolates the -theta frame term from the pivot-height geometry (which
+        otherwise also varies with pitch through the forward moment arm).
+        """
+        return jnp.array([0.0, 0.0, 0.0])
+
+    @pytest.fixture
+    def fwd_pivot(self):
+        """Realistic forward wand pivot (bowsprit, forward of CG)."""
+        return jnp.array([1.6, 0.0, 0.1])
+
+    def test_zero_pitch_equals_world_primitive(self, origin_pivot):
+        """At theta=0 the hull angle equals the world-vertical geometry."""
+        for pos_d_val in [-0.8, -0.5, -0.2]:
+            pos_d = jnp.float64(pos_d_val)
+            angle = wand_angle_from_state(
+                pos_d, jnp.float64(0.0), origin_pivot, DEFAULT_WAND_LENGTH
+            )
+            world = wand_world_angle_from_height(
+                -pos_d, DEFAULT_WAND_LENGTH  # h = -depth, depth = pos_d here
+            )
+            assert abs(float(angle) - float(world)) < 1e-9
+
+    def test_frame_term_is_exactly_minus_pitch(self, origin_pivot):
+        """With pivot depth pitch-independent, wand(theta) - wand(0) == -theta.
+
+        Pinpoints the hull-frame term in isolation: a sign flip here (the exact
+        §4.6 bug) makes this fail immediately, independent of the linkage.
+        """
+        pos_d = jnp.float64(-0.5)  # h = 0.5 m, comfortably interior
+        base = wand_angle_from_state(
+            pos_d, jnp.float64(0.0), origin_pivot, DEFAULT_WAND_LENGTH
+        )
+        for theta_val in [-0.10, -0.03, 0.03, 0.10]:
+            theta = jnp.float64(theta_val)
+            angle = wand_angle_from_state(
+                pos_d, theta, origin_pivot, DEFAULT_WAND_LENGTH
+            )
+            assert abs(float(angle - base) - (-theta_val)) < 1e-6, (
+                f"frame term wrong at theta={theta_val}"
+            )
+
+    def test_flap_differs_by_gain_times_pitch(self, origin_pivot):
+        """§6.7: flap at (pos_d, theta) vs (same height, 0) differs by ~gain*theta.
+
+        Same pivot height (origin pivot ⇒ world angle fixed), so the only
+        difference between the two states is the -theta hull-frame term, which
+        the linkage converts to a flap change of gain * (-theta) to first order.
+        """
+        linkage = create_wand_linkage()
+        pos_d = jnp.float64(-0.5)
+        theta = jnp.float64(0.02)  # ~1.1 deg, small enough for linearization
+
+        wand_level = wand_angle_from_state(
+            pos_d, jnp.float64(0.0), origin_pivot, DEFAULT_WAND_LENGTH
+        )
+        wand_pitched = wand_angle_from_state(
+            pos_d, theta, origin_pivot, DEFAULT_WAND_LENGTH
+        )
+        flap_level = linkage.compute(wand_level)
+        flap_pitched = linkage.compute(wand_pitched)
+
+        gain = linkage.gain(wand_level)
+        expected = float(gain) * (-float(theta))  # = gain * (wand_pitched - wand_level)
+        actual = float(flap_pitched - flap_level)
+        # First-order prediction; tolerance covers linkage curvature over ~1 deg
+        assert abs(actual - expected) < 0.02 * abs(expected) + 1e-6
+        # And the effect is real (non-negligible): comparable to gain*theta
+        assert abs(actual) > 0.5 * abs(float(gain) * float(theta))
+
+    def test_fixed_depth_wand_responds_to_pitch_via_frame_term(self, fwd_pivot):
+        """Gate: at fixed depth, the wand angle carries the -theta path.
+
+        On a realistic forward pivot both effects are present: the world
+        geometry (pivot-height moment arm) AND the hull-frame -theta term. Lock
+        that the total decomposes exactly as world_angle(theta) - theta, so the
+        restored feedback path cannot silently regress.
+        """
+        from fmd.simulator.components.moth_forces import compute_foil_ned_depth
+
+        pos_d = jnp.float64(-0.5)
+        for theta_val in [-0.06, 0.04, 0.09]:
+            theta = jnp.float64(theta_val)
+            total = wand_angle_from_state(
+                pos_d, theta, fwd_pivot, DEFAULT_WAND_LENGTH
+            )
+            # Reconstruct the world-vertical part from the pitched pivot height
+            depth = compute_foil_ned_depth(
+                pos_d, float(fwd_pivot[0]), float(fwd_pivot[2]), theta, 0.0
+            )
+            world = wand_world_angle_from_height(-depth, DEFAULT_WAND_LENGTH)
+            assert abs(float(total) - (float(world) - theta_val)) < 1e-6
+
+        # The frame term makes the total pitch-sensitivity differ from the
+        # geometry-only sensitivity by ~ -1 rad/rad (the deleted feedback path).
+        dth = 1e-4
+        th0, th1 = jnp.float64(0.03), jnp.float64(0.03 + dth)
+        d_total = float(
+            wand_angle_from_state(pos_d, th1, fwd_pivot, DEFAULT_WAND_LENGTH)
+            - wand_angle_from_state(pos_d, th0, fwd_pivot, DEFAULT_WAND_LENGTH)
+        ) / dth
+        d_world = float(
+            wand_world_angle_from_height(
+                -compute_foil_ned_depth(
+                    pos_d, float(fwd_pivot[0]), float(fwd_pivot[2]), th1, 0.0
+                ), DEFAULT_WAND_LENGTH)
+            - wand_world_angle_from_height(
+                -compute_foil_ned_depth(
+                    pos_d, float(fwd_pivot[0]), float(fwd_pivot[2]), th0, 0.0
+                ), DEFAULT_WAND_LENGTH)
+        ) / dth
+        assert abs((d_total - d_world) - (-1.0)) < 1e-3
+
+    def test_wave_path_also_hull_relative(self, origin_pivot):
+        """The -theta correction applies to the wave-aware path too.
+
+        With the pivot at the origin the world-frame fixed-point solution is
+        pitch-independent (pivot depth and pivot NED-north are both independent
+        of theta), so the whole pitch dependence of the wave result is the
+        hull-frame term: waves(theta) == waves(0) - theta.
+        """
+        wave_field = WaveField.from_params(WaveParams.regular(0.15, 4.0))
+        pos_d = jnp.float64(-0.5)
+        fwd_speed = jnp.float64(5.0)
+        t = 1.3
+        base = wand_angle_from_state_waves(
+            pos_d, jnp.float64(0.0), fwd_speed, t, wave_field,
+            origin_pivot, DEFAULT_WAND_LENGTH,
+        )
+        for theta_val in [-0.08, 0.05, 0.11]:
+            theta = jnp.float64(theta_val)
+            waves = wand_angle_from_state_waves(
+                pos_d, theta, fwd_speed, t, wave_field,
+                origin_pivot, DEFAULT_WAND_LENGTH,
+            )
+            assert abs(float(waves - base) - (-theta_val)) < 1e-6, (
+                f"wave-path frame term wrong at theta={theta_val}"
+            )

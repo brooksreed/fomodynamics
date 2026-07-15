@@ -41,6 +41,7 @@ from fmd.simulator.components.moth_wand import (
     WandLinkageState,
     wand_angle_from_state,
     wand_angle_from_state_waves,
+    wand_world_angle_from_height,
     create_wand_linkage,
     gearing_ratio_from_rod,
 )
@@ -61,6 +62,7 @@ __all__ = [
     "WandLinkageState",
     "wand_angle_from_state",
     "wand_angle_from_state_waves",
+    "wand_world_angle_from_height",
     "create_wand_linkage",
     "gearing_ratio_from_rod",
 ]
