@@ -258,6 +258,8 @@ class Moth3D(JaxDynamicSystem):
 
     # Lift lag (Wagner-type first-order filter)
     enable_lift_lag: bool = eqx.field(static=True, default=False)
+    # Integrated encounter distance (x_n state for correct wave phase under varying speed)
+    enable_encounter_distance: bool = eqx.field(static=True, default=False)
     main_foil_chord: float = eqx.field(default=0.089)
     rudder_chord: float = eqx.field(default=0.075)
 
@@ -299,6 +301,7 @@ class Moth3D(JaxDynamicSystem):
         sailor_position_schedule: Optional[eqx.Module] = None,
         surge_enabled: bool = True,
         enable_lift_lag: bool = False,
+        enable_encounter_distance: bool = False,
     ):
         """Initialize Moth 3DOF model from parameters.
 
@@ -321,9 +324,20 @@ class Moth3D(JaxDynamicSystem):
             enable_lift_lag: If True, add Wagner-type first-order lift lag
                 filter with 2 extra states (alpha_filt_main, alpha_filt_rudder).
                 State dimension becomes 7 instead of 5.
+            enable_encounter_distance: If True, carry an integrated encounter
+                distance x_n (appended as the last state) so wave phase is
+                queried at ∫u dt rather than u·t — correct under varying speed.
+                Default False (opt-in, like ``enable_lift_lag``): x_n has no
+                trim equilibrium (ẋ_n ≈ u > 0) and is uncontrollable, so it must
+                stay OUT of calm-water trim/LQR/EKF/MPC plants. Enable it only
+                for wave studies with a varying speed; at fixed speed u·t is
+                already exact. Note it is intentionally NOT coupled to
+                ``surge_enabled`` — surge is on by default, so coupling would
+                grow (and break trim on) nearly every model.
         """
         self.surge_enabled = surge_enabled
         self.enable_lift_lag = enable_lift_lag
+        self.enable_encounter_distance = enable_encounter_distance
         # Read control bounds from params
         self.control_bounds = (
             (float(MAIN_FLAP_MIN), float(MAIN_FLAP_MAX)),
@@ -377,15 +391,30 @@ class Moth3D(JaxDynamicSystem):
 
         # State and aux names depend on lift lag
         if enable_lift_lag:
-            self.state_names = ("pos_d", "theta", "w", "q", "u", "alpha_filt_main", "alpha_filt_rudder")
+            state_names = ("pos_d", "theta", "w", "q", "u", "alpha_filt_main", "alpha_filt_rudder")
             self.aux_names = _MOTH_AUX_NAMES + ("main_alpha_filt", "rudder_alpha_filt", "main_lift_filtered", "rudder_lift_filtered")
         else:
-            self.state_names = ("pos_d", "theta", "w", "q", "u")
+            state_names = ("pos_d", "theta", "w", "q", "u")
             self.aux_names = _MOTH_AUX_NAMES
+        # Encounter distance x_n is appended last so base state indices are stable
+        if self.enable_encounter_distance:
+            state_names = state_names + ("x_n",)
+        self.state_names = state_names
 
     @property
     def num_states(self) -> int:
-        """Number of state variables (5 or 7 with lift lag)."""
+        """Number of state variables (5, +2 with lift lag, +1 with encounter distance)."""
+        n = 7 if self.enable_lift_lag else 5
+        return n + 1 if self.enable_encounter_distance else n
+
+    @property
+    def x_n_index(self) -> Optional[int]:
+        """State index of the integrated encounter distance x_n, or None if disabled.
+
+        x_n is appended last, after the optional lift-lag filter states.
+        """
+        if not self.enable_encounter_distance:
+            return None
         return 7 if self.enable_lift_lag else 5
 
     @property
@@ -409,12 +438,15 @@ class Moth3D(JaxDynamicSystem):
         Returns:
             Initial state [pos_d=-1.3, theta=0, w=0, q=0, u=u_forward(0)]
             With lift lag: appends [alpha_filt_main=0, alpha_filt_rudder=0]
+            With encounter distance: appends [x_n=0] as the last state.
             pos_d=-1.3 places hull bottom above water in the new geometry
             (hull_contact_depth ~0.94, so hull bottom at -1.3 + 0.94 = -0.36 < 0).
         """
         base = jnp.array([-1.3, 0.0, 0.0, 0.0, self.u_forward_schedule(0.0)])
         if self.enable_lift_lag:
-            return jnp.concatenate([base, jnp.zeros(2)])
+            base = jnp.concatenate([base, jnp.zeros(2)])
+        if self.enable_encounter_distance:
+            base = jnp.concatenate([base, jnp.zeros(1)])
         return base
 
     def default_control(self) -> Array:
@@ -494,9 +526,13 @@ class Moth3D(JaxDynamicSystem):
         sin_theta = jnp.sin(theta)
 
         if env is not None and env.wave_field is not None:
+            # Encounter-distance base coordinate: integrated ∫u dt (state x_n) when
+            # enabled, else the constant-speed approximation u·t (exact at fixed speed).
+            x_enc = state[self.x_n_index] if self.enable_encounter_distance else u_safe * t
+
             # Per-foil NED-north positions (body offset projected to NED)
-            x_main_ned = u_safe * t + eff_main_x * cos_theta + eff_main_z * sin_theta
-            x_rudder_ned = u_safe * t + eff_rudder_x * cos_theta + eff_rudder_z * sin_theta
+            x_main_ned = x_enc + eff_main_x * cos_theta + eff_main_z * sin_theta
+            x_rudder_ned = x_enc + eff_rudder_x * cos_theta + eff_rudder_z * sin_theta
 
             # Wave elevation at each foil
             eta_main = env.wave_field.elevation(x_main_ned, 0.0, t)
@@ -699,6 +735,7 @@ class Moth3D(JaxDynamicSystem):
         )
 
         base_deriv = jnp.array([terms.pos_d_dot, theta_dot, w_dot, q_dot, u_dot])
+        deriv = base_deriv
 
         if self.enable_lift_lag:
             # Wagner-type first-order filter: d(alpha_filt)/dt = (alpha_inst - alpha_filt) / tau
@@ -717,9 +754,16 @@ class Moth3D(JaxDynamicSystem):
             d_alpha_main = (alpha_inst_main - alpha_filt_main) / tau_main
             d_alpha_rudder = (alpha_inst_rudder - alpha_filt_rudder) / tau_rudder
 
-            return jnp.concatenate([base_deriv, jnp.array([d_alpha_main, d_alpha_rudder])])
+            deriv = jnp.concatenate([deriv, jnp.array([d_alpha_main, d_alpha_rudder])])
 
-        return base_deriv
+        if self.enable_encounter_distance:
+            # ẋ_n = NED-north velocity of the CG = u·cosθ + w·sinθ (matches the
+            # offset projection eff_x·cosθ + eff_z·sinθ and pos_d_dot's frame).
+            # Uses u_fwd so it is correct whether or not surge is a dynamic state.
+            x_n_dot = terms.u_fwd * jnp.cos(state[THETA]) + state[W] * jnp.sin(state[THETA])
+            deriv = jnp.concatenate([deriv, jnp.array([x_n_dot])])
+
+        return deriv
 
     def compute_aux(self, state, control, t=0.0, env=None):
         """Compute auxiliary outputs for logging.

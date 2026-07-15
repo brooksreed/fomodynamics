@@ -201,6 +201,7 @@ def wand_angle_from_state_waves(
     wand_length: float,
     heel_angle: float = 0.0,
     n_iterations: int = 5,
+    encounter_distance: Optional[Array] = None,
 ) -> Array:
     """Compute wand angle with wave-aware fixed-point iteration.
 
@@ -237,6 +238,12 @@ def wand_angle_from_state_waves(
         n_iterations: Number of fixed-point iterations (default 5,
             validated by convergence study to achieve <1e-6 rad for all
             tested wave conditions including short steep waves).
+        encounter_distance: Optional integrated encounter distance (∫u dt, the
+            plant's ``x_n`` state) for the pivot's NED-north position. When
+            ``None`` (default) falls back to the constant-speed estimate
+            ``max(fwd_speed, 0.1)·t`` — exact only at fixed speed. Pass the
+            plant's ``x_n`` to keep the wand coordinate consistent with the
+            model's wave queries under varying speed (§4.1).
 
     Returns:
         Wand angle (rad). 0 = vertical, pi/2 = horizontal.
@@ -255,10 +262,13 @@ def wand_angle_from_state_waves(
     )
 
     # Pivot NED-north position (same pattern as moth_3d wave queries)
-    u_safe = jnp.maximum(fwd_speed, 0.1)
     cos_theta = jnp.cos(theta)
     sin_theta = jnp.sin(theta)
-    n_pivot = u_safe * t + pivot_x * cos_theta + pivot_z * sin_theta
+    if encounter_distance is None:
+        x_enc = jnp.maximum(fwd_speed, 0.1) * t
+    else:
+        x_enc = encounter_distance
+    n_pivot = x_enc + pivot_x * cos_theta + pivot_z * sin_theta
 
     # Start from calm-water solution
     theta_w_init = wand_angle_from_state(
