@@ -191,12 +191,19 @@ def print_results(
         tr = r.trim
         status = "OK" if tr.success else "FAIL"
         warns = ", ".join(r.warnings) if r.warnings else "none"
+        tip = tr.diagnostics.get("leeward_tip_depth")
+        df = tr.diagnostics.get("depth_factor")
+        vent = (
+            f"tip={tip * 100:6.2f}cm, df={df:.3f}, "
+            if tip is not None and df is not None else ""
+        )
         print(
             f"  {speed:5.1f} m/s: thrust={r.thrust:7.1f} N, "
             f"theta={np.degrees(tr.state[1]):6.3f} deg, "
             f"pos_d={tr.state[0]:7.4f} m, "
             f"flap={np.degrees(tr.control[0]):6.3f} deg, "
             f"elev={np.degrees(tr.control[1]):6.3f} deg, "
+            f"{vent}"
             f"residual={tr.residual:.2e}, status={status}, warns=[{warns}]",
             flush=True,
         )
@@ -282,12 +289,16 @@ def save_csv(
                 "pos_d_m",
                 "flap_deg",
                 "elev_deg",
+                "leeward_tip_m",
+                "depth_factor",
                 "success",
                 "warnings",
             ]
         )
         for speed, r in zip(speeds, results):
             tr = r.trim
+            tip = tr.diagnostics.get("leeward_tip_depth")
+            df = tr.diagnostics.get("depth_factor")
             writer.writerow(
                 [
                     f"{speed:.1f}",
@@ -297,6 +308,8 @@ def save_csv(
                     f"{tr.state[0]:.4f}",
                     f"{np.degrees(tr.control[0]):.4f}",
                     f"{np.degrees(tr.control[1]):.4f}",
+                    f"{tip:.4f}" if tip is not None else "",
+                    f"{df:.4f}" if df is not None else "",
                     str(tr.success),
                     "; ".join(r.warnings) if r.warnings else "",
                 ]

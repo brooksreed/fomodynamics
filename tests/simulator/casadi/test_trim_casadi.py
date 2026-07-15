@@ -11,9 +11,11 @@ from fmd.simulator.trim_casadi import (
     CalibrationTrimResult,
     CasadiTrimResult,
     CharacteristicScales,
+    DEFAULT_POS_D_REF,
     DEFAULT_SCALES,
     PhaseInfo,
     calibrate_moth_thrust,
+    compute_ventilation_margin,
     find_casadi_trim,
     find_casadi_trim_sweep,
     find_moth_trim,
@@ -173,7 +175,7 @@ class TestSolverIntegration:
         """Solver exception returns success=False, residual=inf, non-empty warnings."""
         from unittest.mock import MagicMock
 
-        def _mock_build_nlp(model, params, u_target, scales):
+        def _mock_build_nlp(model, params, u_target, scales, pos_d_ref):
             from fmd.simulator.trim_casadi import _variable_bounds
             lbz, ubz = _variable_bounds(params, u_target)
             mock_solver = MagicMock(side_effect=RuntimeError("mock solver failure"))
@@ -191,7 +193,7 @@ class TestSolverIntegration:
         """Phase 2 exception falls back to Phase 1 result with finite residual."""
         from unittest.mock import MagicMock
 
-        def _mock_build_nlp_hard(model, params, u_target, scales):
+        def _mock_build_nlp_hard(model, params, u_target, scales, pos_d_ref):
             mock_solver = MagicMock(side_effect=RuntimeError("phase2 boom"))
             mock_f_xdot = MagicMock()
             return mock_solver, mock_f_xdot
@@ -302,6 +304,80 @@ class TestTargetPinning:
             err_msg=f"pos_d not pinned: {result.state[0]:.6f} m"
         )
         assert result.residual < 1e-6, f"Residual too high: {result.residual}"
+
+
+class TestBranchGuard:
+    """Cold multi-start branch guard for the pos_d null space (TRIM-NULL / C1.E).
+
+    Before the pos_d regularization, ride height was nearly a null direction of
+    the force balance, so cold starts from different guesses landed on different
+    branches (an ~18% thrust spread at 10 m/s). These tests lock in single-branch
+    convergence. They must start from *genuinely varied* guesses — a single
+    geometry guess agrees by construction and hides the manifold.
+    """
+
+    def test_cold_multistart_single_branch(self):
+        """Varied cold starts across the feasible range converge to one branch."""
+        # Guesses span the feasible pos_d range [-1.50, -1.315] and vary the
+        # flap, so agreement cannot come from a shared initial point.
+        pos_d_starts = [-1.50, -1.45, -1.40, -1.35, -1.315]
+        flap_starts = [-0.05, 0.0, 0.05, 0.10]
+
+        thrusts, pos_ds = [], []
+        for pd in pos_d_starts:
+            for fl in flap_starts:
+                z0 = np.array([pd, 0.0, 0.0, 0.0, 10.0, fl, 0.02, 100.0])
+                result = find_casadi_trim(MOTH_BIEKER_V3, u_target=10.0, z0=z0)
+                assert result.success, f"Failed from z0 pos_d={pd}, flap={fl}"
+                assert result.residual < 1e-6
+                thrusts.append(result.thrust)
+                pos_ds.append(result.state[0])
+
+        spread = (max(thrusts) - min(thrusts)) / np.mean(thrusts)
+        assert spread < 0.01, (
+            f"Cold multi-start thrust spread {spread:.2%} > 1% — the null space "
+            f"is not closed (thrusts {min(thrusts):.2f}..{max(thrusts):.2f} N)"
+        )
+        # All starts land near the ride-height reference.
+        np.testing.assert_allclose(
+            pos_ds, DEFAULT_POS_D_REF, atol=0.02,
+            err_msg=f"pos_d did not converge to ref: range "
+                    f"[{min(pos_ds):.4f}, {max(pos_ds):.4f}]",
+        )
+
+    def test_pinned_pos_d_thrust_unaffected_by_reg(self):
+        """The reg is exactly zero at a pinned pos_d (pos_d_ref := pin).
+
+        A pinned solve must reach exact feasibility regardless of the default
+        reference — the regularization term vanishes at the pin.
+        """
+        result = find_casadi_trim(MOTH_BIEKER_V3, u_target=10.0, target_pos_d=-1.30)
+        assert result.success
+        np.testing.assert_allclose(result.state[0], -1.30, atol=1e-6)
+        assert result.residual < 1e-6
+
+
+class TestVentilationMargin:
+    """Ventilation-margin diagnostic reported at every trim (racing framing)."""
+
+    def test_diagnostics_include_ventilation_margin(self):
+        """Every trim result reports leeward tip depth + depth_factor."""
+        result = find_casadi_trim(MOTH_BIEKER_V3, u_target=10.0)
+        assert result.success
+        assert "leeward_tip_depth" in result.diagnostics
+        assert "depth_factor" in result.diagnostics
+        # At 10 m/s the leeward tip is submerged with margin and lift is intact.
+        assert result.diagnostics["leeward_tip_depth"] > 0.0
+        assert result.diagnostics["depth_factor"] > 0.9
+
+    def test_ventilation_margin_helper_matches_state(self):
+        """compute_ventilation_margin agrees with the values stored on the result."""
+        result = find_casadi_trim(MOTH_BIEKER_V3, u_target=10.0)
+        tip, df = compute_ventilation_margin(
+            MOTH_BIEKER_V3, result.state, np.deg2rad(30.0)
+        )
+        np.testing.assert_allclose(tip, result.diagnostics["leeward_tip_depth"])
+        np.testing.assert_allclose(df, result.diagnostics["depth_factor"])
 
 
 class TestFindMothTrimWrapper:

@@ -55,13 +55,13 @@ def test_seed_round_trip(tmp_path):
     )
     assert warm[0].trim.success
 
-    # Warm-start should land on a nearby trim. The seed system speeds up
-    # convergence; it does not guarantee bit-reproducibility — IPOPT is
-    # path-dependent in the residual null-space, so a few % of drift is
-    # acceptable as long as both solutions are valid trims.
+    # With the pos_d regularization closing the trim null space (TRIM-NULL / C1.E),
+    # cold and warm starts select the same branch, so warm-vs-cold drift is now
+    # tiny (~0.02% observed). Assert within 1% — the historical 5% tolerance
+    # institutionalized the branch ambiguity and is no longer needed.
     rel_err = abs(warm[0].thrust - cold[0].thrust) / abs(cold[0].thrust)
-    assert rel_err < 0.05, (
-        f"Warm-started thrust drifted >5% from cold: cold={cold[0].thrust:.3f} N, "
+    assert rel_err < 0.01, (
+        f"Warm-started thrust drifted >1% from cold: cold={cold[0].thrust:.3f} N, "
         f"warm={warm[0].thrust:.3f} N (rel_err={rel_err:.2%})"
     )
 
