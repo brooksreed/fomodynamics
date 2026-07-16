@@ -277,6 +277,7 @@ def _create_model(
     heel_angle: float,
     ventilation_mode: str,
     ventilation_threshold: float,
+    ventilation_sharpness: float = 6.0,
 ) -> Moth3DCasadiExact:
     """Create zero-thrust CasADi model for trim solving."""
     p0 = attrs.evolve(
@@ -291,6 +292,7 @@ def _create_model(
         ventilation_mode=ventilation_mode,
         ventilation_threshold=ventilation_threshold,
         surge_enabled=True,
+        ventilation_sharpness=ventilation_sharpness,
     )
 
 
@@ -647,6 +649,7 @@ def find_casadi_trim(
     target_pos_d: float | None = None,
     z0: np.ndarray | None = None,
     fixed_controls: dict[str, float] | None = None,
+    ventilation_sharpness: float = 6.0,
 ) -> CasadiTrimResult:
     """Find trim equilibrium using two-phase CasADi/IPOPT solver.
 
@@ -659,6 +662,7 @@ def find_casadi_trim(
         heel_angle: Static heel angle (rad). Default 30 degrees.
         ventilation_mode: "smooth" or "binary".
         ventilation_threshold: Ventilation onset threshold.
+        ventilation_sharpness: tanh gain of the ventilation cutoff.
         scales: Characteristic scales for NLP normalization.
         target_theta: If set, pin theta to this value (rad).
         target_pos_d: If set, pin pos_d to this value (m).
@@ -674,7 +678,8 @@ def find_casadi_trim(
     """
     t0 = time.monotonic()
 
-    model = _create_model(params, heel_angle, ventilation_mode, ventilation_threshold)
+    model = _create_model(params, heel_angle, ventilation_mode,
+                          ventilation_threshold, ventilation_sharpness)
 
     # Ride-height regularization reference. When pos_d is pinned, center the
     # regularization on the pin so the term is exactly zero at the solution and
