@@ -44,6 +44,7 @@ from fmd.simulator.control import ControlSchedule, ConstantControl
 from fmd.simulator.linearize import linearize
 from fmd.simulator.components.moth_forces import (
     compute_depth_factor,
+    compute_foil_ned_depth,
     compute_leeward_tip_depth,
 )
 
@@ -481,9 +482,17 @@ def run_perturbation_sweep(
         ))
         min_tip_depth = float(np.min(main_tip_depth))
 
-        # Depth factor (hydrodynamic metric, retained alongside tip depth)
-        main_depth = pos_d_traj + main_pos[2] - main_pos[0] * np.sin(theta_traj)
-        rudder_depth = pos_d_traj + rudder_pos[2] - rudder_pos[0] * np.sin(theta_traj)
+        # Depth factor (hydrodynamic metric, retained alongside tip depth).
+        # Use the canonical force-model depth (includes the cos(heel)·cos(theta)
+        # projection on the z-offset) so this diagnostic matches the force model.
+        main_depth = np.array(compute_foil_ned_depth(
+            jnp.array(pos_d_traj), main_pos[0], main_pos[2],
+            jnp.array(theta_traj), moth.main_foil.heel_angle,
+        ))
+        rudder_depth = np.array(compute_foil_ned_depth(
+            jnp.array(pos_d_traj), rudder_pos[0], rudder_pos[2],
+            jnp.array(theta_traj), moth.rudder.heel_angle,
+        ))
 
         main_df = np.array(compute_depth_factor(
             jnp.array(main_depth), params.main_foil_span, moth.main_foil.heel_angle,
