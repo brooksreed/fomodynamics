@@ -68,6 +68,8 @@ class Moth3DCasadiExact(CasadiDynamicSystem):
         ventilation_threshold: float = 0.30,
         surge_enabled: bool = True,
         u_forward: float = 10.0,
+        ventilation_sharpness: float = 6.0,
+        enable_free_surface_lift: bool = True,
     ):
         """Initialize Moth3D CasADi model from parameters.
 
@@ -78,6 +80,9 @@ class Moth3DCasadiExact(CasadiDynamicSystem):
             ventilation_threshold: Exposed span fraction for ventilation onset.
             surge_enabled: If True, surge velocity is a dynamic state.
             u_forward: Constant forward speed when surge_enabled=False (m/s).
+            ventilation_sharpness: tanh gain of the ventilation cutoff.
+            enable_free_surface_lift: Apply the sigma(h/c) free-surface lift
+                correction on both foils (default True). Matches the JAX model.
         """
         # Physical parameters
         self.total_mass = float(params.total_mass)
@@ -114,6 +119,7 @@ class Moth3DCasadiExact(CasadiDynamicSystem):
         self.main_foil_position_x = float(params.main_foil_position[0])
         self.main_foil_position_z = float(params.main_foil_position[2])
         self.main_foil_span = float(params.main_foil_span)
+        self.main_foil_chord = float(params.main_foil_chord)
 
         # Rudder parameters
         self.rudder_area = float(params.rudder_area)
@@ -124,6 +130,7 @@ class Moth3DCasadiExact(CasadiDynamicSystem):
         self.rudder_position_x = float(params.rudder_position[0])
         self.rudder_position_z = float(params.rudder_position[2])
         self.rudder_span = float(params.rudder_span)
+        self.rudder_chord = float(params.rudder_chord)
 
         # Sail parameters
         self.sail_thrust_coeff = float(params.sail_thrust_coeff)
@@ -162,6 +169,10 @@ class Moth3DCasadiExact(CasadiDynamicSystem):
         self.heel_angle = float(heel_angle)
         self.ventilation_mode = ventilation_mode
         self.ventilation_threshold = float(ventilation_threshold)
+        self.ventilation_sharpness = float(ventilation_sharpness)
+
+        # Free-surface lift correction
+        self.enable_free_surface_lift = bool(enable_free_surface_lift)
 
         # Surge dynamics
         self.surge_enabled = surge_enabled
@@ -192,7 +203,26 @@ class Moth3DCasadiExact(CasadiDynamicSystem):
 
         # Normalize and tanh transition
         normalized = exposed / cs.fmax(self.ventilation_threshold, eps)
-        return 0.5 * (1.0 - cs.tanh((normalized - 0.5) * 6.0))
+        return 0.5 * (1.0 - cs.tanh((normalized - 0.5) * self.ventilation_sharpness))
+
+    def _compute_free_surface_factor(self, foil_depth, chord, foil_span):
+        """Free-surface lift correction sigma(h/c), 3-point spanwise sampled.
+
+        Matches compute_free_surface_factor() in moth_forces.py exactly:
+        sigma(h/c) = (1 + 16*(h/c)^2) / (2 + 16*(h/c)^2), depth clamped at 0,
+        evaluated at spanwise stations y = {-s/3, 0, +s/3} shifted by heel,
+        equal-weight averaged. Returns 1.0 when disabled.
+        """
+        if not self.enable_free_surface_lift:
+            return 1.0
+
+        sigma_sum = 0.0
+        for station in (-foil_span / 3.0, 0.0, foil_span / 3.0):
+            station_depth = foil_depth - station * cs.sin(self.heel_angle)
+            h_over_c = cs.fmax(station_depth, 0.0) / chord
+            hc2 = 16.0 * h_over_c ** 2
+            sigma_sum = sigma_sum + (1.0 + hc2) / (2.0 + hc2)
+        return sigma_sum / 3.0
 
     def _compute_main_foil(self, x, u, u_fwd):
         """Compute main foil force and moment in body frame.
@@ -225,9 +255,13 @@ class Moth3DCasadiExact(CasadiDynamicSystem):
                       - eff_pos_x * cs.sin(theta))
         depth_factor = self._compute_depth_factor(foil_depth, self.main_foil_span)
 
+        # Free-surface lift correction (matches JAX component)
+        sigma_eff = self._compute_free_surface_factor(
+            foil_depth, self.main_foil_chord, self.main_foil_span)
+
         # Lift and drag coefficients
-        cl = (self.main_foil_cl0 + self.main_foil_cl_alpha * alpha_eff) * depth_factor
-        cd = self.main_foil_cd0 * depth_factor + cl ** 2 / (cs.pi * self.main_foil_ar * self.main_foil_oswald)
+        cl = sigma_eff * (self.main_foil_cl0 + self.main_foil_cl_alpha * alpha_eff) * depth_factor
+        cd = self.main_foil_cd0 * depth_factor + cl ** 2 / (cs.pi * self.main_foil_ar * self.main_foil_oswald * sigma_eff)
         cd = cd + self.main_foil_cd_flap * main_flap ** 2
 
         # Dynamic pressure
@@ -277,11 +311,15 @@ class Moth3DCasadiExact(CasadiDynamicSystem):
                       - eff_pos_x * cs.sin(theta))
         depth_factor = self._compute_depth_factor(foil_depth, self.rudder_span)
 
+        # Free-surface lift correction (matches JAX component)
+        sigma_eff = self._compute_free_surface_factor(
+            foil_depth, self.rudder_chord, self.rudder_span)
+
         # Lift coefficient with depth factor
-        rudder_cl = self.rudder_cl_alpha * alpha_eff * depth_factor
+        rudder_cl = sigma_eff * self.rudder_cl_alpha * alpha_eff * depth_factor
 
         # Drag coefficient: parabolic polar (same as main foil)
-        rudder_cd = self.rudder_cd0 * depth_factor + rudder_cl ** 2 / (cs.pi * self.rudder_ar * self.rudder_oswald)
+        rudder_cd = self.rudder_cd0 * depth_factor + rudder_cl ** 2 / (cs.pi * self.rudder_ar * self.rudder_oswald * sigma_eff)
 
         # Dynamic pressure
         q_dyn = 0.5 * self.rho * u_fwd ** 2

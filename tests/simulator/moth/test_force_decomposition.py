@@ -22,6 +22,7 @@ from fmd.simulator.components.moth_forces import (
     MothStrutDrag,
     compute_depth_factor,
     compute_foil_ned_depth,
+    compute_free_surface_factor,
 )
 from fmd.simulator.moth_3d import ConstantSchedule, POS_D, Q, THETA, U, W
 
@@ -115,9 +116,13 @@ class TestZeroFlowAngle:
         depth_factor = float(compute_depth_factor(
             foil_depth, foil.foil_span, 0.0, foil.ventilation_threshold, foil.ventilation_mode
         ))
+        # Include free-surface lift factor (C1.F: on by default)
+        sigma = float(compute_free_surface_factor(
+            foil_depth, foil.chord, foil.foil_span, 0.0
+        ))
 
-        cl = (foil.cl0 + foil.cl_alpha * alpha_eff) * depth_factor
-        cd = foil.cd0 * depth_factor + cl**2 / (np.pi * foil.ar * foil.oswald) + foil.cd_flap * flap**2
+        cl = sigma * (foil.cl0 + foil.cl_alpha * alpha_eff) * depth_factor
+        cd = foil.cd0 * depth_factor + cl**2 / (np.pi * foil.ar * foil.oswald * sigma) + foil.cd_flap * flap**2
         q_dyn = 0.5 * foil.rho * u_forward**2
         lift = q_dyn * foil.area * cl
         drag = q_dyn * foil.area * cd
@@ -142,9 +147,13 @@ class TestZeroFlowAngle:
         depth_factor = float(compute_depth_factor(
             foil_depth, rudder.foil_span, 0.0, rudder.ventilation_threshold, rudder.ventilation_mode
         ))
+        # Include free-surface lift factor (C1.F: on by default)
+        sigma = float(compute_free_surface_factor(
+            foil_depth, rudder.chord, rudder.foil_span, 0.0
+        ))
 
-        cl = rudder.cl_alpha * alpha_eff * depth_factor
-        cd = rudder.cd0 * depth_factor + cl**2 / (np.pi * rudder.ar * rudder.oswald)
+        cl = sigma * rudder.cl_alpha * alpha_eff * depth_factor
+        cd = rudder.cd0 * depth_factor + cl**2 / (np.pi * rudder.ar * rudder.oswald * sigma)
         q_dyn = 0.5 * rudder.rho * u_forward**2
         lift = q_dyn * rudder.area * cl
         drag = q_dyn * rudder.area * cd
@@ -208,8 +217,16 @@ class TestSmallAngleSigns:
         alpha_geo = np.arctan2(w_local, u_safe)
 
         alpha_eff = 0.05 + w_local / u_safe
-        cl = rudder.cl_alpha * alpha_eff
-        cd = rudder.cd0 + cl**2 / (np.pi * rudder.ar * rudder.oswald)
+        # sigma matters here: the rudder helper sits only 0.1 m deep
+        # (h/c ~ 1.3, sigma ~ 0.97 — outside the 1% tolerance if omitted)
+        foil_depth = compute_foil_ned_depth(
+            float(state[POS_D]), rudder.position_x, rudder.position_z, 0.0, 0.0
+        )
+        sigma = float(compute_free_surface_factor(
+            foil_depth, rudder.chord, rudder.foil_span, 0.0
+        ))
+        cl = sigma * rudder.cl_alpha * alpha_eff
+        cd = rudder.cd0 + cl**2 / (np.pi * rudder.ar * rudder.oswald * sigma)
         q_dyn = 0.5 * rudder.rho * 10.0**2
         lift = q_dyn * rudder.area * cl
         drag = q_dyn * rudder.area * cd

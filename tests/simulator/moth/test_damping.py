@@ -29,9 +29,13 @@ from fmd.simulator.linearize import linearize
 # Updated: NED→body sail thrust rotation, surge dynamics enabled
 # Reference values computed with CasADi trim solver
 # 8 m/s excluded: CasADi convergence issue with NED sail thrust
+# Reference values re-measured after the C1.F free-surface lift correction
+# (sigma(h/c)): FSL adds real heave stiffness at trim, which slows the
+# unstable pitch/heave divergence (max_real at 10 m/s: 0.482 -> 0.354).
+# Physically expected direction — do not revert without re-deriving.
 EIGENVALUE_REFERENCE = {
-    10.0: {"max_real": 0.482, "min_real": -34.88},
-    12.0: {"max_real": 0.601, "min_real": -40.89},
+    10.0: {"max_real": 0.354, "min_real": -34.52},
+    12.0: {"max_real": 0.497, "min_real": -40.48},
 }
 
 

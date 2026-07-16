@@ -57,6 +57,7 @@ from fmd.simulator.components.moth_forces import (
     MothStrutDrag,
     compute_foil_ned_depth,
     compute_depth_factor,
+    compute_free_surface_factor,
     create_moth_components,
 )
 
@@ -302,6 +303,8 @@ class Moth3D(JaxDynamicSystem):
         surge_enabled: bool = True,
         enable_lift_lag: bool = False,
         enable_encounter_distance: bool = False,
+        ventilation_sharpness: float = 6.0,
+        enable_free_surface_lift: bool = True,
     ):
         """Initialize Moth 3DOF model from parameters.
 
@@ -334,6 +337,11 @@ class Moth3D(JaxDynamicSystem):
                 already exact. Note it is intentionally NOT coupled to
                 ``surge_enabled`` — surge is on by default, so coupling would
                 grow (and break trim on) nearly every model.
+            ventilation_sharpness: tanh gain of the ventilation cutoff
+                (default 6.0). Larger = steeper ventilation cliff.
+            enable_free_surface_lift: Apply the sigma(h/c) free-surface lift
+                correction on both foils (default True). Disable only for
+                before/after comparisons against the pre-FSL model.
         """
         self.surge_enabled = surge_enabled
         self.enable_lift_lag = enable_lift_lag
@@ -364,6 +372,8 @@ class Moth3D(JaxDynamicSystem):
             ventilation_mode=ventilation_mode,
             ventilation_threshold=ventilation_threshold,
             cg_offset=None,
+            ventilation_sharpness=ventilation_sharpness,
+            enable_free_surface_lift=enable_free_surface_lift,
         )
         self.main_foil = foil
         self.rudder = rudder
@@ -625,11 +635,25 @@ class Moth3D(JaxDynamicSystem):
         main_df = compute_depth_factor(
             main_foil_depth, self.main_foil.foil_span,
             self.main_foil.heel_angle, self.main_foil.ventilation_threshold,
-            self.main_foil.ventilation_mode)
+            self.main_foil.ventilation_mode, self.main_foil.ventilation_sharpness)
         rudder_df = compute_depth_factor(
             rudder_foil_depth, self.rudder.foil_span,
             self.rudder.heel_angle, self.rudder.ventilation_threshold,
-            self.rudder.ventilation_mode)
+            self.rudder.ventilation_mode, self.rudder.ventilation_sharpness)
+
+        # Free-surface lift factors (mirror the component computation)
+        if self.main_foil.enable_free_surface_lift:
+            main_sigma = compute_free_surface_factor(
+                main_foil_depth, self.main_foil.chord,
+                self.main_foil.foil_span, self.main_foil.heel_angle)
+        else:
+            main_sigma = 1.0
+        if self.rudder.enable_free_surface_lift:
+            rudder_sigma = compute_free_surface_factor(
+                rudder_foil_depth, self.rudder.chord,
+                self.rudder.foil_span, self.rudder.heel_angle)
+        else:
+            rudder_sigma = 1.0
 
         # ------------------------------------------------------------------
         # Aux: AoA and aero coefficients (uses effective flow speed)
@@ -649,15 +673,16 @@ class Moth3D(JaxDynamicSystem):
         q_dyn_main = 0.5 * self.rho_water * u_eff_main**2
         q_dyn_rudder = 0.5 * self.rho_water * u_eff_rudder**2
 
-        main_cl = (self.main_foil.cl0 + self.main_foil.cl_alpha * main_alpha_eff) * main_df
-        main_cd = (self.main_foil.cd0
-                   + main_cl**2 / (jnp.pi * self.main_foil.ar * self.main_foil.oswald)
+        main_cl = main_sigma * (self.main_foil.cl0 + self.main_foil.cl_alpha * main_alpha_eff) * main_df
+        main_cd = (self.main_foil.cd0 * main_df
+                   + main_cl**2 / (jnp.pi * self.main_foil.ar * self.main_foil.oswald * main_sigma)
                    + self.main_foil.cd_flap * control[MAIN_FLAP]**2)
         main_lift_aero = q_dyn_main * self.main_foil.area * main_cl
         main_drag_aero = q_dyn_main * self.main_foil.area * main_cd
 
-        rudder_cl = self.rudder.cl_alpha * rudder_alpha_eff * rudder_df
-        rudder_cd = self.rudder.cd0 + rudder_cl**2 / (jnp.pi * self.rudder.ar * self.rudder.oswald)
+        rudder_cl = rudder_sigma * self.rudder.cl_alpha * rudder_alpha_eff * rudder_df
+        rudder_cd = (self.rudder.cd0 * rudder_df
+                     + rudder_cl**2 / (jnp.pi * self.rudder.ar * self.rudder.oswald * rudder_sigma))
         rudder_lift_aero = q_dyn_rudder * self.rudder.area * rudder_cl
         rudder_drag_aero = q_dyn_rudder * self.rudder.area * rudder_cd
 
