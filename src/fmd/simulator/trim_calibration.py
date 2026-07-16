@@ -47,6 +47,7 @@ from typing import Iterable
 
 import numpy as np
 
+from fmd.simulator.provenance import provenance_stamp
 from fmd.simulator.trim_casadi import (
     CalibrationTrimResult,
     calibrate_moth_thrust,
@@ -60,6 +61,9 @@ from fmd.simulator.trim_report import (
     save_report,
 )
 from fmd.simulator.params.moth import MothParams
+
+
+_PROVENANCE_KEY = "_provenance"  # reserved seed-cache key; not a per-speed z0
 
 
 _Z_LEN = 8  # decision-variable length: [pos_d, theta, w, q, u, flap, elev, thrust]
@@ -169,6 +173,7 @@ def calibrate_moth_thrust_table(
         for speed, result in zip(speeds_list, results):
             if result.trim.success:
                 seeds[_seed_key(speed)] = _z0_from_result(result)
+        seeds[_PROVENANCE_KEY] = provenance_stamp(params)
         _save_seeds(seeds, seed_path)
         if verbose:
             print(f"Saved seeds to {seed_path}", flush=True)
@@ -394,6 +399,7 @@ def write_outputs(
         [float(s) for s in speeds],
         params_summary=params_summary,
     )
+    report.metadata = provenance_stamp(params)
     json_path, md_path = save_report(report, output_dir)
     print(f"Saved: {json_path}")
     print(f"Saved: {md_path}")
