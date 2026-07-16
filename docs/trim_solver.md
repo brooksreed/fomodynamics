@@ -141,36 +141,41 @@ When state targets are pinned (`target_theta` and/or `target_pos_d`), the proble
 
 ## Typical Results
 
-### Calibrated thrust curve (MOTH_BIEKER_V3 preset, post AoA fix + measured geometry)
+### Calibrated thrust curve (MOTH_BIEKER_V3 preset, physics-correctness batch)
 
-> **Snapshot**: 2026-03-13, branch `feature/foil-force-decomposition-fix`.
-> Geometry: hull_cg_from_bow=1.99, main_foil_from_bow=1.57, strut_depth=1.03, main_foil_cl0=0.15. AoA decomposition fix applied (alpha_geo/alpha_eff). Calibrated at 30 deg heel with `surge_enabled=True`.
+> **Snapshot**: 2026-07-16, branch `physics-correctness` (post
+> WAVE-AOA/ETA-DEPTH/QUAT/TRIM-NULL/FSL fixes; free-surface lift on).
+> Calibrated with the CasADi/IPOPT two-phase solver, **pinned at
+> pos_d = DEFAULT_POS_D_REF (-1.40 m)**, 30 deg heel, cold start (no seeds).
+> The pinned solve stays on the primary trim branch by construction — the
+> free (regularized) solve is branch-ambiguous above ~18 m/s, where cold
+> starts can land on a nose-down secondary branch with 17-29% lower thrust.
 
 | Speed (m/s) | Thrust (N) |
 |-------------|------------|
-| 6.0 | 52.3 |
-| 7.0 | 54.8 |
-| 8.0 | 61.3 |
-| 9.0 | 70.6 |
-| 10.0 | 82.4 |
-| 11.0 | 96.2 |
-| 12.0 | 111.8 |
-| 13.0 | 129.2 |
-| 14.0 | 148.3 |
-| 15.0 | 168.9 |
-| 16.0 | 191.1 |
-| 17.0 | 214.7 |
-| 18.0 | 239.8 |
-| 19.0 | 266.3 |
-| 20.0 | 294.2 |
+| 6.0 | 47.6 |
+| 7.0 | 50.3 |
+| 8.0 | 56.3 |
+| 9.0 | 64.9 |
+| 10.0 | 75.5 |
+| 11.0 | 87.9 |
+| 12.0 | 102.0 |
+| 13.0 | 117.7 |
+| 14.0 | 134.8 |
+| 15.0 | 153.4 |
+| 16.0 | 173.4 |
+| 17.0 | 194.9 |
+| 18.0 | 217.6 |
+| 19.0 | 241.8 |
+| 20.0 | 267.3 |
 
 **Observations:**
 
 - Thrust is monotonically increasing across the full 6-20 m/s range, approximately following a u^2 drag law.
-- The AoA decomposition fix eliminated the non-monotonic low-speed behavior (old table had 235, 155, 124, 111, 108 N at 6-10 m/s). The old model had artificial drag from lift-into-surge leakage via the conflated AoA, which inflated low-speed thrust requirements.
-- Thrust minimum at 6 m/s (52.3 N). Low-speed values are dramatically lower than the pre-fix model (~52 vs ~235 N at 6 m/s).
-- Pitch angle decreases monotonically with speed (alpha proportional to 1/u^2), as expected.
-- Residuals < 0.02 at 8+ m/s; 6-7 m/s are at the foiling envelope edge with higher residuals.
+- Pitch decreases smoothly from +4.0 deg (6 m/s, nose-up for lift at low dynamic pressure) through zero near 14 m/s to -0.49 deg at 20 m/s; flap and elevator stay within +/-0.5 deg across the band.
+- Leeward tip depth at trim grows from +2.2 cm (6 m/s, the binding ventilation-margin case) to +7.4 cm (20 m/s); depth_factor 0.998 everywhere.
+- All 15 speeds converge with residuals < 1e-8 (hard-constraint phase).
+- Historical note: the pre-AoA-fix model was non-monotonic at low speed (235, 155, 124, 111, 108 N at 6-10 m/s) from lift-into-surge leakage via a conflated AoA; that was fixed in 2026-03.
 
 **Open-loop stability:** The system has a positive real eigenvalue at all speeds (~+0.33 to +0.58 rad/s), with instability increasing with speed. Time constants of 1.7-3.0 s are physically reasonable for an open-loop unstable foiling boat. See `tests/simulator/moth/test_damping.py` for current reference eigenvalues.
 

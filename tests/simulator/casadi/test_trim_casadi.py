@@ -356,6 +356,39 @@ class TestBranchGuard:
         np.testing.assert_allclose(result.state[0], -1.30, atol=1e-6)
         assert result.residual < 1e-6
 
+    def test_calibration_path_single_branch_high_speed(self):
+        """Cold multi-start calibration at 20 m/s stays on the primary branch.
+
+        The free (regularized) solve is branch-ambiguous above ~18 m/s: cold
+        starts can land on a nose-down secondary branch (theta ~ -4 deg) with
+        17-29% lower thrust (found in C1.G). The calibration path pins pos_d
+        at DEFAULT_POS_D_REF, which has no null space by construction — varied
+        cold starts must agree, land at the pin, and keep a mild attitude.
+        """
+        thrusts, thetas = [], []
+        for pd in (-1.50, -1.40, -1.315):
+            for fl in (0.0, 0.10):
+                z0 = np.array([pd, 0.0, 0.0, 0.0, 20.0, fl, 0.02, 200.0])
+                cal = calibrate_moth_thrust(MOTH_BIEKER_V3, target_u=20.0, z0=z0)
+                assert cal.trim.success, f"Failed from z0 pos_d={pd}, flap={fl}"
+                assert cal.trim.residual < 1e-6
+                np.testing.assert_allclose(
+                    cal.trim.state[0], DEFAULT_POS_D_REF, atol=1e-6,
+                )
+                thrusts.append(cal.thrust)
+                thetas.append(cal.trim.state[1])
+
+        spread = (max(thrusts) - min(thrusts)) / np.mean(thrusts)
+        assert spread < 0.01, (
+            f"Pinned calibration multi-start spread {spread:.2%} > 1% at 20 m/s "
+            f"(thrusts {min(thrusts):.2f}..{max(thrusts):.2f} N)"
+        )
+        # Primary branch: mild nose-down trim, not the theta ~ -4 deg secondary.
+        assert all(abs(th) < np.deg2rad(1.0) for th in thetas), (
+            f"theta not mild at 20 m/s: {np.degrees(thetas)} deg — "
+            f"secondary-branch capture?"
+        )
+
 
 class TestVentilationMargin:
     """Ventilation-margin diagnostic reported at every trim (racing framing)."""

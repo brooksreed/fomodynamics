@@ -296,10 +296,15 @@ MOTH_BIEKER_V3 = MothParams(
     bowsprit_hull_datum=np.array([0.0, 0.0, 0.45]),  # Bow, deck height
     wand_pivot_hull_datum=np.array([0.0, 0.0, 0.35]),  # Bow, below deck
 
-    # Sail thrust: lookup table calibrated via CasADi/IPOPT trim solver
-    sail_thrust_coeff=69.7,
+    # Sail thrust: lookup table calibrated via CasADi/IPOPT trim solver,
+    # pinned at pos_d = DEFAULT_POS_D_REF (-1.40 m), 30 deg heel, cold start
+    # (no seeds). Calibrated 2026-07-16 on the physics-correctness batch
+    # (post WAVE-AOA/ETA-DEPTH/QUAT/TRIM-NULL/FSL; FSL on). The pinned solve
+    # stays on the primary trim branch by construction — the free solve is
+    # branch-ambiguous above ~18 m/s (nose-down secondary branch).
+    sail_thrust_coeff=75.5,
     sail_thrust_speeds=(6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 19.0, 20.0),
-    sail_thrust_values=(46.8, 49.0, 54.0, 60.7, 69.7, 80.5, 98.4, 113.6, 126.6, 143.2, 161.5, 182.6, 202.1, 227.1, 240.9),
+    sail_thrust_values=(47.6, 50.3, 56.3, 64.9, 75.5, 87.9, 102.0, 117.7, 134.8, 153.4, 173.4, 194.9, 217.6, 241.8, 267.3),
 )
 """Mackay Bieker Moth V3 parameters.
 

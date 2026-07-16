@@ -1040,6 +1040,7 @@ def calibrate_moth_thrust(
     target_u: float,
     heel_angle: float = np.deg2rad(30.0),
     z0: np.ndarray | None = None,
+    target_pos_d: float | None = DEFAULT_POS_D_REF,
     **kwargs,
 ) -> CalibrationTrimResult:
     """Calibrate sail thrust at a single speed.
@@ -1047,18 +1048,31 @@ def calibrate_moth_thrust(
     Since CasADi always solves for thrust as a free variable, this just
     validates and wraps the trim result.
 
+    The solve is pinned at ``target_pos_d`` (default ``DEFAULT_POS_D_REF``):
+    the calibrated thrust is "the thrust that makes the ride-height reference
+    an equilibrium at this speed". A pinned solve has no pos_d null space, so
+    it stays on the primary trim branch by construction — the free
+    (regularized) solve is branch-ambiguous above ~18 m/s, where cold starts
+    can land on a nose-down secondary branch with 17-29% lower thrust.
+    Pass ``target_pos_d=None`` for the legacy free-ride-height calibration.
+
     Args:
         params: Moth parameters.
         target_u: Target forward speed (m/s).
         heel_angle: Static heel angle (rad).
         z0: Initial guess for decision variables (8-vector). Passed to
             find_casadi_trim for warm-starting from a previous solution.
+        target_pos_d: Ride height to pin the solve at (m). Default
+            ``DEFAULT_POS_D_REF``; ``None`` leaves pos_d free (regularized).
         **kwargs: Additional args passed to find_casadi_trim.
 
     Returns:
         CalibrationTrimResult with speed, thrust, trim result, and warnings.
     """
-    result = find_casadi_trim(params, target_u, heel_angle=heel_angle, z0=z0, **kwargs)
+    result = find_casadi_trim(
+        params, target_u, heel_angle=heel_angle, z0=z0,
+        target_pos_d=target_pos_d, **kwargs,
+    )
     warns = validate_trim_result(result, target_u)
 
     return CalibrationTrimResult(
