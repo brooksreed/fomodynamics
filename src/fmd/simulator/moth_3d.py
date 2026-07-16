@@ -171,6 +171,8 @@ class StepTerms(NamedTuple):
     main_alpha_eff: Array
     rudder_alpha_geo: Array
     rudder_alpha_eff: Array
+    u_eff_main: Array
+    u_eff_rudder: Array
     main_lift_aero: Array
     main_drag_aero: Array
     rudder_lift_aero: Array
@@ -658,9 +660,11 @@ class Moth3D(JaxDynamicSystem):
         # ------------------------------------------------------------------
         # Aux: AoA and aero coefficients (uses effective flow speed)
         # ------------------------------------------------------------------
-        # Flow speed relative to the water (v_rel = v_foil - v_water).
-        u_eff_main = u_safe - u_orbital_body_main
-        u_eff_rudder = u_safe - u_orbital_body_rudder
+        # Flow speed relative to the water (v_rel = v_foil - v_water). Clamped like
+        # u_safe (matches moth_forces.py's component-level u_eff clamp) so steep,
+        # low-speed waves (orbital >~ u_safe) can't drive this through/near zero.
+        u_eff_main = jnp.maximum(u_safe - u_orbital_body_main, _MIN_FORWARD_SPEED)
+        u_eff_rudder = jnp.maximum(u_safe - u_orbital_body_rudder, _MIN_FORWARD_SPEED)
 
         w_local_main = state[W] - state[Q] * eff_main_x - w_orbital_body_main
         main_alpha_geo = jnp.arctan2(w_local_main, u_eff_main)
@@ -709,6 +713,8 @@ class Moth3D(JaxDynamicSystem):
             main_alpha_eff=main_alpha_eff,
             rudder_alpha_geo=rudder_alpha_geo,
             rudder_alpha_eff=rudder_alpha_eff,
+            u_eff_main=u_eff_main,
+            u_eff_rudder=u_eff_rudder,
             main_lift_aero=main_lift_aero,
             main_drag_aero=main_drag_aero,
             rudder_lift_aero=rudder_lift_aero,
@@ -853,11 +859,11 @@ class Moth3D(JaxDynamicSystem):
             alpha_filt_rudder = state[6]
 
             main_cl_filt = (self.main_foil.cl0 + self.main_foil.cl_alpha * alpha_filt_main) * terms.main_df
-            main_lift_filtered = (0.5 * self.rho_water * (terms.u_safe - terms.wave_u_orbital_main) ** 2
+            main_lift_filtered = (0.5 * self.rho_water * terms.u_eff_main ** 2
                                   * self.main_foil.area * main_cl_filt)
 
             rudder_cl_filt = self.rudder.cl_alpha * alpha_filt_rudder * terms.rudder_df
-            rudder_lift_filtered = (0.5 * self.rho_water * (terms.u_safe - terms.wave_u_orbital_rudder) ** 2
+            rudder_lift_filtered = (0.5 * self.rho_water * terms.u_eff_rudder ** 2
                                     * self.rudder.area * rudder_cl_filt)
 
             aux = jnp.concatenate([aux, jnp.array([

@@ -575,7 +575,7 @@ In addition to the binary/smooth ventilation transition above, a submerged foil 
 
 $$\sigma_{\text{FSL}} = \frac{1 + 16(h/c)^2}{2 + 16(h/c)^2}$$
 
-verbatim from the classical infinite-Froude image-vortex result (Wadlin, NACA RM L51B13); $\sigma_{\text{FSL}} \to 1$ deep, $\sigma_{\text{FSL}} = 0.5$ at the surface ($h = 0$, clamped for $h \leq 0$ — post-breach behavior is `compute_depth_factor`'s job, not FSL's, to avoid double-counting). $h$ is the foil-center NED depth, $c$ is the chord. On a heeled boat, $\sigma_{\text{FSL}}$ is evaluated at 3 spanwise stations ($y = -s/3, 0, +s/3$, offset by heel) and averaged, since the leeward tip runs shallower than the center. Enabled by default (`enable_free_surface_lift`), gated by `ventilation_sharpness` (formerly hardcoded at 6.0) for the ventilation-taper steepness it feeds into `compute_depth_factor`.
+verbatim from the classical infinite-Froude image-vortex result (Wadlin, NACA RM L51B13); $\sigma_{\text{FSL}} \to 1$ deep, $\sigma_{\text{FSL}} = 0.5$ at the surface ($h = 0$, clamped for $h \leq 0$ — post-breach behavior is `compute_depth_factor`'s job, not FSL's, to avoid double-counting). $h$ is the foil-center NED depth, $c$ is the chord. On a heeled boat, $\sigma_{\text{FSL}}$ is evaluated at 3 spanwise stations ($y = -s/3, 0, +s/3$, offset by heel) and averaged, since the leeward tip runs shallower than the center. Enabled by default (`enable_free_surface_lift`). `ventilation_sharpness` (formerly hardcoded at 6.0) is a separate, pre-existing parameter of the ventilation model — it controls the taper steepness inside `compute_depth_factor`, not FSL — now exposed end-to-end rather than hardcoded.
 
 ### 5.8 Application to Components
 
