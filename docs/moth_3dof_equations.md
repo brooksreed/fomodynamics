@@ -23,7 +23,7 @@ When this document and implementation disagree, treat implementation as source o
 - `pos_d_dot` now includes **CG-velocity terms** from `sailor_position_schedule`.
 - Composite pitch inertia is computed **per-timestep** from sailor position schedule.
 - Sail force supports **lookup-table thrust vs speed** (with affine fallback).
-- Strut drag currently uses a **fixed configured strut depth** (not dynamic immersion).
+- Strut drag uses **dynamically computed immersion** (submerged length varies with ride height and pitch via `compute_foil_ned_depth`), not a fixed configured strut depth.
 - Foil force decomposition now separates **alpha_geo** (geometric AoA for force rotation) from **alpha_eff** (effective AoA including control surface deflection for polar lookup). The full lift+drag rotation matrix is applied using alpha_geo.
 
 **Source files:**
@@ -155,7 +155,7 @@ $$I_{yy,\text{composite}} = I_{yy,\text{hull}} + \mu (x_s^2 + z_s^2)$$
 
 where $\mu = m_{\text{hull}} \cdot m_{\text{sailor}} / m_{\text{total}}$ is the reduced mass and $(x_s, z_s)$ is the sailor position relative to the hull CG.
 
-Default values: $m_{\text{added,heave}} = 10$ kg, $I_{\text{added,pitch}} = 8.75$ kg·m², nominal $I_{yy,\text{composite}} \approx 14.24$ kg·m² at default sailor position. See `damping_mechanisms_research.md` for added mass derivation.
+Default values: $m_{\text{added,heave}} = 10$ kg, $I_{\text{added,pitch}} = 8.75$ kg·m², nominal $I_{yy,\text{composite}} \approx 122.5$ kg·m² at default sailor position (hull $I_{yy}$ 118.6 kg·m² from the measured-component estimate + 3.9 kg·m² sailor reduced-mass term). See the `added_mass_heave`/`added_inertia_pitch` field docstrings in `src/fmd/simulator/params/moth.py` for the added-mass derivation (70% of thin-airfoil-theory values) and `scripts/estimate_moth_inertia.py` for the hull inertia estimate.
 
 The total forces and moments are:
 
@@ -229,9 +229,9 @@ The term $-q \cdot x_{\text{foil}} / u$ captures pitch-rate induced AoA change. 
 
 $$C_L = (C_{L_0} + C_{L_\alpha} \cdot \alpha_{\text{eff}}) \cdot f_{\text{depth}}$$
 
-$$C_D = C_{D_0} + \frac{C_L^2}{\pi \cdot AR \cdot e} + C_{D,\text{flap}} \cdot \delta_{\text{flap}}^2$$
+$$C_D = C_{D_0} \cdot f_{\text{depth}} + \frac{C_L^2}{\pi \cdot AR \cdot e \cdot \sigma_{\text{FSL}}} + C_{D,\text{flap}} \cdot \delta_{\text{flap}}^2$$
 
-where $f_{\text{depth}}$ is the ventilation/depth factor (Section 5), $AR$ is the aspect ratio ($\text{span}^2 / S$), $e$ is the Oswald efficiency factor, and $C_{D,\text{flap}}$ is the flap deflection drag coefficient (default 0.15, based on McCormick formula for cf/c~0.25 reduced for hydrofoil).
+where $f_{\text{depth}}$ is the ventilation/depth factor (Section 5, applied to $C_{D_0}$ as well as $C_L$), $AR$ is the aspect ratio ($\text{span}^2 / S$), $e$ is the Oswald efficiency factor, $\sigma_{\text{FSL}}$ is the free-surface-lift correction (Section 5; divides the induced-drag term, raising it as the foil nears the surface; 1.0 when FSL is disabled), and $C_{D,\text{flap}}$ is the flap deflection drag coefficient (default 0.15, based on McCormick formula for cf/c~0.25 reduced for hydrofoil).
 
 **Dynamic pressure:**
 
@@ -271,7 +271,7 @@ where $r_x$ = `position_x` (positive forward) and $r_z$ = `position_z` (positive
 |-----------|--------|-------|------|
 | `rho_water` | $\rho$ | 1025.0 | kg/m$^3$ |
 | `main_foil_area` | $S$ | 0.08455 | m$^2$ |
-| `main_foil_cl_alpha` | $C_{L_\alpha}$ | 5.7 | 1/rad |
+| `main_foil_cl_alpha` | $C_{L_\alpha}$ | 6.0 | 1/rad |
 | `main_foil_cl0` | $C_{L_0}$ | 0.15 | -- |
 | `main_foil_cd0` | $C_{D_0}$ | 0.006 | -- |
 | `main_foil_oswald` | $e$ | 0.85 | -- |
@@ -328,7 +328,7 @@ $$M_y = r_z \cdot F_x - r_x \cdot F_z$$
 | Parameter | Symbol | Value | Unit |
 |-----------|--------|-------|------|
 | `rudder_area` | $S_{\text{rudder}}$ | 0.051 | m$^2$ |
-| `rudder_cl_alpha` | $C_{L_\alpha,\text{rudder}}$ | 5.0 | 1/rad |
+| `rudder_cl_alpha` | $C_{L_\alpha,\text{rudder}}$ | 5.5 | 1/rad |
 | `rudder_position` | $[r_x, r_y, r_z]$ | $[-1.865, 0, 1.77]$ | m |
 | `rudder_span` | -- | 0.68 | m |
 
@@ -359,10 +359,10 @@ The full cross product $\mathbf{r} \times \mathbf{F}$ is required because the NE
 
 | Parameter | Value | Unit |
 |-----------|-------|------|
-| `sail_thrust_coeff` (fallback constant) | 107.6 | N |
+| `sail_thrust_coeff` (fallback constant) | 75.5 | N |
 | `sail_thrust_speeds` | (6.0, 7.0, ..., 20.0) | m/s |
-| `sail_thrust_values` | (235.4, 154.8, ..., 267.9) | N |
-| `sail_ce_position` | $[0.20, 0, -2.13]$ | m |
+| `sail_thrust_values` | (47.6, 50.3, ..., 267.3) | N |
+| `sail_ce_position` | $[-0.51, 0, -1.18]$ | m |
 
 ### 4.4 Hull Contact Drag + Buoyancy (`MothHullDrag`)
 
@@ -415,11 +415,17 @@ vertical layout.
 
 Hydrofoil struts (vertical members connecting the hull to the horizontal foils) produce drag from both pressure and skin friction forces. Two instances exist: main foil strut and rudder strut.
 
+**Dynamic submerged length:** the strut spans body-frame z from `strut_top_z` (hull bottom) to `strut_bottom_z` (at the foil). NED depth of each end is computed via `compute_foil_ned_depth` (pitch- and heel-corrected), and the immersion fraction is the fraction of the strut's NED depth span currently below the surface:
+
+$$\text{immersion} = \frac{\text{clip}(d_{\text{bottom}} - \max(0, d_{\text{top}}),\ 0,\ d_{\text{span}})}{d_{\text{span}}}, \qquad d_{\text{strut}} = \text{immersion} \cdot L_{\text{strut}}$$
+
+where $d_{\text{span}} = \max(d_{\text{bottom}} - d_{\text{top}}, \epsilon)$ is the NED depth span of the full strut and $L_{\text{strut}}$ is its physical length (`strut_max_depth`). This replaces the fixed configured strut depth used by an earlier implementation — the model is better than the historical doc advertised: submerged length now varies with ride height (pos_d) and pitch (theta), not just a static parameter.
+
 **Pressure drag (based on frontal area):**
 
 $$D_{\text{pressure}} = \frac{1}{2} \rho \, u^2 \cdot C_{D,\text{pressure}} \cdot (t_{\text{strut}} \cdot d_{\text{strut}})$$
 
-where $t_{\text{strut}}$ is the strut thickness, $d_{\text{strut}}$ is the configured strut depth parameter, and $C_{D,\text{pressure}}$ is the pressure drag coefficient.
+where $t_{\text{strut}}$ is the strut thickness, $d_{\text{strut}}$ is the dynamic submerged length above, and $C_{D,\text{pressure}}$ is the pressure drag coefficient.
 
 **Skin friction drag (based on wetted area):**
 
@@ -427,13 +433,13 @@ $$D_{\text{skin}} = \frac{1}{2} \rho \, u^2 \cdot C_f \cdot (2 \cdot c_{\text{st
 
 where $c_{\text{strut}}$ is the strut chord, and the factor of 2 accounts for both sides of the strut being wetted.
 
-> Implementation note: current `MothStrutDrag` uses fixed `strut_depth` from parameters (approximated from foil z-position), not dynamic immersed depth.
+**Total strut drag and moment:**
 
-**Total strut drag:**
+$$F_x = -(D_{\text{pressure}} + D_{\text{skin}}), \qquad F_y = 0, \quad F_z = 0$$
 
-$$F_x = -(D_{\text{pressure}} + D_{\text{skin}})$$
+$$M_y = r_{z,\text{centroid}} \cdot F_x$$
 
-$$F_y = 0, \quad F_z = 0$$
+where $r_{z,\text{centroid}} = z_{\text{bottom}} - d_{\text{strut}}/2$ is the body-frame z of the submerged segment's centroid (shifts toward the still-submerged portion as the strut partially emerges).
 
 **Default parameter values** (from `MOTH_BIEKER_V3`):
 
@@ -464,9 +470,9 @@ Gravity acts through the system CG, so it produces no pitching moment ($M_{y,\te
 
 | Parameter | Value | Unit |
 |-----------|-------|------|
-| `total_mass` ($m_{\text{total}}$) | 92.0 | kg |
+| `total_mass` ($m_{\text{total}}$) | 125.0 | kg |
 | `g` | 9.80665 | m/s$^2$ |
-| `composite_pitch_inertia` ($I_{yy}$) | 14.24 | kg$\cdot$m$^2$ |
+| `composite_pitch_inertia` ($I_{yy}$) | 122.5 | kg$\cdot$m$^2$ |
 
 ---
 
@@ -563,13 +569,21 @@ The `Moth3D` model defaults to a **30 deg** static heel angle (`heel_angle = np.
 - Rudder ($S = 0.7$ m, $r_z = 0.50$ m): tip breach at $\text{pos}_d \approx -0.325$ m
 - The main foil starts to ventilate just before the rudder, matching physical expectations for a Moth (the main foil's larger span causes its windward tip to breach first).
 
-### 5.7 Application to Components
+### 5.7 Free-Surface Lift Correction (FSL)
 
-- **Main foil:** Depth factor multiplies the lift coefficient: $C_L = (C_{L_0} + C_{L_\alpha} \cdot \alpha_{\text{eff}}) \cdot f_{\text{depth}}$. The drag coefficient uses the factored $C_L$ in its induced drag term, so drag also reduces with ventilation.
-- **Rudder:** Same depth factor model applied to rudder lift coefficient: $C_{L,\text{rudder}} = C_{L_\alpha} \cdot \alpha_{\text{eff}} \cdot f_{\text{depth}}$.
-- Both foils use their own `position_x` and `position_z` for computing `foil_depth` (with pitch correction), and their own `foil_span` for the ventilation geometry.
+In addition to the binary/smooth ventilation transition above, a submerged foil loses lift gradually as it nears the free surface, well before any breach: its bound circulation sees a negative image in the free surface (the high-Froude image-vortex effect), which reduces the effective lift slope. This is modeled by a separate factor $\sigma_{\text{FSL}}(h/c) \in [0.5, 1]$, computed by `compute_free_surface_factor()`:
 
-### 5.8 Geometric Corrections Audit Checklist
+$$\sigma_{\text{FSL}} = \frac{1 + 16(h/c)^2}{2 + 16(h/c)^2}$$
+
+verbatim from the classical infinite-Froude image-vortex result (Wadlin, NACA RM L51B13); $\sigma_{\text{FSL}} \to 1$ deep, $\sigma_{\text{FSL}} = 0.5$ at the surface ($h = 0$, clamped for $h \leq 0$ — post-breach behavior is `compute_depth_factor`'s job, not FSL's, to avoid double-counting). $h$ is the foil-center NED depth, $c$ is the chord. On a heeled boat, $\sigma_{\text{FSL}}$ is evaluated at 3 spanwise stations ($y = -s/3, 0, +s/3$, offset by heel) and averaged, since the leeward tip runs shallower than the center. Enabled by default (`enable_free_surface_lift`), gated by `ventilation_sharpness` (formerly hardcoded at 6.0) for the ventilation-taper steepness it feeds into `compute_depth_factor`.
+
+### 5.8 Application to Components
+
+- **Main foil:** $C_L = \sigma_{\text{FSL}} \cdot (C_{L_0} + C_{L_\alpha} \cdot \alpha_{\text{eff}}) \cdot f_{\text{depth}}$; $C_D = C_{D_0} \cdot f_{\text{depth}} + C_L^2 / (\pi \cdot AR \cdot e \cdot \sigma_{\text{FSL}})$ — FSL divides the induced-drag term (reduced circulation costs more induced drag per unit lift), while $f_{\text{depth}}$ still governs ventilation onset/breach for both lift and the parasitic-drag term.
+- **Rudder:** Same structure: $C_{L,\text{rudder}} = \sigma_{\text{FSL}} \cdot C_{L_\alpha} \cdot \alpha_{\text{eff}} \cdot f_{\text{depth}}$.
+- Both foils use their own `position_x` and `position_z` for computing `foil_depth` (with pitch correction), and their own `foil_span`/`chord` for the ventilation and FSL geometry.
+
+### 5.9 Geometric Corrections Audit Checklist
 
 The table below captures the current status of key geometry-dependent computations in `moth_forces.py`. It is intentionally line-number free to reduce maintenance churn.
 
@@ -648,7 +662,7 @@ See [`docs/trim_solver.md`](trim_solver.md) for full solver details: objective f
 
 ### 6.5 Open-Loop Stability
 
-The system has a positive real eigenvalue at all speeds (~+0.33 to +0.58 rad/s), with instability increasing with speed. Time constants of 1.7-3.0 s are physically reasonable for an open-loop unstable foiling boat. See `tests/simulator/moth/test_damping.py` for current reference eigenvalues.
+The system has a positive real eigenvalue at all speeds (post-FSL reference: +0.354 rad/s at 10 m/s, +0.497 rad/s at 12 m/s, increasing with speed), with instability increasing with speed. Time constants of ~2-3 s are physically reasonable for an open-loop unstable foiling boat. These max-real values dropped from a pre-FSL ~0.45-0.54 rad/s (C1.F's free-surface lift correction adds real heave stiffness at trim, slowing the divergence). See `tests/simulator/moth/test_damping.py` (`EIGENVALUE_REFERENCE`) for current reference eigenvalues — that is the source of truth for this number, update this line whenever it changes.
 
 ---
 
@@ -679,15 +693,11 @@ Water acceleration around the foils creates added mass and inertia that slow the
 | $m_{\text{added,heave}}$ | 10 kg | Added mass for heave motion |
 | $I_{\text{added,pitch}}$ | 8.75 kg·m² | Added pitch inertia |
 
-These values are approximately 70% of thin airfoil theory predictions, accounting for 3D effects and free surface proximity. See `damping_mechanisms_research.md` for detailed derivation.
+These values are approximately 70% of thin airfoil theory predictions, accounting for 3D effects and free surface proximity. See the `added_mass_heave`/`added_inertia_pitch` field docstrings in `src/fmd/simulator/params/moth.py` for the derivation.
 
 ### 7.3 Effect on Stability
 
-With these damping mechanisms, the system is nearly marginally stable at trim:
-- **Baseline (no damping):** Eigenvalue ~174 rad/s, time constant ~6 ms
-- **With damping:** Eigenvalue <0.1 rad/s, time constant >10 s
-
-The pitch rate coupling (especially the rudder's long moment arm) provides the dominant damping effect.
+These damping mechanisms reduce, but do not eliminate, the open-loop instability: the dominant unstable mode (pitch/heave divergence, Section 6.5) retains a positive real eigenvalue of order +0.35 to +0.5 rad/s (time constant ~2-3 s) with damping present — the system remains open-loop unstable at all trimmed speeds and closed-loop control is required. `TestDampingComparison` in `tests/simulator/moth/test_damping.py` confirms the qualitative direction (added mass slows the fast stable modes; both heave and pitch-rate diagonal terms are damped, i.e. negative), though it does not isolate a "no damping at all" baseline eigenvalue — the pitch rate coupling (especially the rudder's long moment arm) is expected to provide the dominant damping effect based on the $M_q$ magnitude in Section 7.1, but no current test quantifies the fully-undamped divergence rate.
 
 ---
 

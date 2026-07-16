@@ -4,13 +4,13 @@ Validates the linearized dynamics eigenvalue structure and damping
 behavior after the foil force decomposition fix (alpha_geo/alpha_eff).
 
 Eigenvalue structure at trim with surge_enabled=True (per-speed Moth3D, free theta):
-- 2 fast stable real eigenvalues (Re ~ -23 to -43)
-- 1 stable real (heave mode, Re ~ -0.4 to -0.6)
-- 1 stable real (surge mode, Re ~ -0.3, from drag/gravity coupling)
-- 1 unstable real (pitch divergence, Re ~ +0.45 to +0.55)
+- 2 fast stable real eigenvalues (Re ~ -34 to -40)
+- 1 stable real (heave mode)
+- 1 stable real (surge mode, from drag/gravity coupling)
+- 1 unstable real (pitch divergence)
 
-Max positive eigenvalue increases monotonically with speed:
-  10 m/s: +0.45, 12 m/s: +0.54
+Max positive eigenvalue increases monotonically with speed (post-C1.F FSL values,
+see EIGENVALUE_REFERENCE below): 10 m/s: +0.354, 12 m/s: +0.497.
 """
 
 import pytest

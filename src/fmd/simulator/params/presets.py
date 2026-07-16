@@ -322,9 +322,9 @@ Properties:
     - Main foil AR: ~10.7
     - Rudder AR: ~9.1
     - hull_contact_depth: 0.94 m (system CG to hull bottom)
-    - Derived main_foil_position: [0.55, 0, 1.82] (body FRD)
-    - Derived rudder_position: [-1.755, 0, 1.77] (body FRD)
-    - Derived sail_ce_position: [-0.40, 0, -1.18] (body FRD)
+    - Derived main_foil_position: [0.42, 0, 1.85] (body FRD)
+    - Derived rudder_position: [-1.865, 0, 1.77] (body FRD)
+    - Derived sail_ce_position: [-0.51, 0, -1.18] (body FRD)
     - main_foil_cl0: 0.15 (cambered foil section)
 """
 
