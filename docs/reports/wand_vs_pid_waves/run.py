@@ -18,6 +18,7 @@ Usage (from fmd repo root with the fmd editable install active):
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import sys
 import time
@@ -54,9 +55,9 @@ from fmd.simulator.moth_scenarios import (
     apply_speed_governor,
     create_mechanical_wand_config,
     create_pid_wand_config,
-    governor_thrust0,
 )
 from fmd.simulator.components.moth_forces import compute_tip_at_surface_pos_d
+from fmd.simulator.trim_casadi import find_moth_trim
 from fmd.simulator.params import MOTH_BIEKER_V3
 from fmd.simulator.params.presets import WAVE_SF_BAY_MODERATE
 from fmd.simulator.sweep import sweep_closed_loop, stack_envs
@@ -284,25 +285,46 @@ def _target_pos_d_for_kind(controller_kind: str, *, trim_state: np.ndarray) -> f
     raise ValueError(f"Unknown controller_kind: {controller_kind}")
 
 
+@functools.lru_cache(maxsize=1)
+def _deeper_pinned_trim():
+    """Pinned trim at pid_deeper's setpoint (one solve per process).
+
+    Single source for pid_deeper's own trim: the governor T0, the PID's
+    per-setpoint calibration (``setpoint_trim``), the own-trim initial
+    state, and the flap-metric reference all read this cached solve, so
+    they are bit-consistent by construction (C2.C2 trim-at-setpoint).
+    """
+    target_pos_d = float(compute_tip_at_surface_pos_d() + PID_DEEPER_MARGIN_M)
+    return find_moth_trim(
+        MOTH_BIEKER_V3, u_forward=U_TARGET,
+        target_pos_d=target_pos_d, heel_angle=HEEL_ANGLE,
+    )
+
+
+def _setpoint_trim_for_kind(controller_kind: str, *, lqr):
+    """Each controller's OWN trim (the operating point it is calibrated at).
+
+    Mirrors ``_target_pos_d_for_kind``. mechanical / pid_natural operate at
+    the natural trim = the LQR design point (``lqr.trim`` — bit-consistent,
+    single-branch); pid_deeper at the cached pinned solve at its deeper
+    setpoint.
+    """
+    if controller_kind in ("mechanical", "pid_natural"):
+        return lqr.trim
+    if controller_kind == "pid_deeper":
+        return _deeper_pinned_trim()
+    raise ValueError(f"Unknown controller_kind: {controller_kind}")
+
+
 def _governor_thrust0_for_kind(controller_kind: str, *, lqr) -> float:
     """Pinned-trim thrust T0 (N) at each controller's own ride-height setpoint.
 
-    Mirrors ``_target_pos_d_for_kind``. For the natural-trim controllers T0 is
-    read straight from the LQR design point (``lqr.trim.thrust`` — bit-
-    consistent, single-branch); only ``pid_deeper`` needs a fresh pinned
-    solve at its deeper setpoint. ΔT(t) = F_sail − T0 then isolates wave added
-    resistance, and the T0 differences between setpoints are the calm
-    drag-vs-ride-height decomposition (racing framing).
+    T0 = the setpoint trim's thrust (see ``_setpoint_trim_for_kind``).
+    ΔT(t) = F_sail − T0 then isolates wave added resistance, and the T0
+    differences between setpoints are the calm drag-vs-ride-height
+    decomposition (racing framing).
     """
-    if controller_kind in ("mechanical", "pid_natural"):
-        return float(lqr.trim.thrust)
-    if controller_kind == "pid_deeper":
-        target_pos_d = float(compute_tip_at_surface_pos_d() + PID_DEEPER_MARGIN_M)
-        return governor_thrust0(
-            MOTH_BIEKER_V3, target_pos_d=target_pos_d,
-            u_target=U_TARGET, heel_angle=HEEL_ANGLE,
-        )
-    raise ValueError(f"Unknown controller_kind: {controller_kind}")
+    return float(_setpoint_trim_for_kind(controller_kind, lqr=lqr).thrust)
 
 
 def _build_plant(controller_kind: str, *, lqr, kp: float, captive: bool):
@@ -359,10 +381,14 @@ def _build_controller_for_kind(
         # (less negative altitude), so we ADD the margin to the
         # tip-at-surface pos_d, not subtract.  The plan write-up has the
         # sign inverted; we flip it here.
+        # Calibrated at its OWN pinned trim (C2.C2 trim-at-setpoint);
+        # the shared cached solve keeps it bit-consistent with the
+        # governor T0 and the own-trim initial state.
         target_pos_d = compute_tip_at_surface_pos_d() + PID_DEEPER_MARGIN_M
         return create_pid_wand_config(
             lqr, params=MOTH_BIEKER_V3, heel_angle=HEEL_ANGLE, dt=DT,
             target_pos_d=float(target_pos_d),
+            setpoint_trim=_deeper_pinned_trim(),
             encounter_distance_index=encounter_distance_index,
             num_states=num_states,
         )
@@ -387,8 +413,12 @@ def run_single_seed(lqr, *, controller_kind: str, wave_seed: int,
         encounter_distance_index=moth.x_n_index, num_states=moth.num_states,
     )
 
-    trim_state = jnp.array(lqr.trim.state)
-    trim_control = jnp.array(lqr.trim.control)
+    # Own-trim initialization (C2.C2): each controller starts at ITS OWN
+    # trim (pid_deeper at the deeper pinned trim), so no wind-toward-target
+    # transient pollutes the early record. u_prev init = own trim control.
+    setpoint_trim = _setpoint_trim_for_kind(controller_kind, lqr=lqr)
+    trim_state = jnp.array(setpoint_trim.state)
+    trim_control = jnp.array(setpoint_trim.control)
     # The PassthroughEstimator's pseudo-state only ever fills slot 0 (wand
     # angle); the rest are zero filler. It must still match the plant's
     # num_states so the pipeline's elementwise x_true - x_est stays valid.
@@ -437,7 +467,9 @@ def run_monte_carlo(lqr, *, controller_kind: str, n_seeds: int,
         encounter_distance_index=moth.x_n_index, num_states=moth.num_states,
     )
 
-    trim_state = jnp.array(lqr.trim.state)
+    # Own-trim initialization (C2.C2) — see run_single_seed.
+    setpoint_trim = _setpoint_trim_for_kind(controller_kind, lqr=lqr)
+    trim_state = jnp.array(setpoint_trim.state)
     # See run_single_seed: x0_est must match the plant's num_states.
     x0_true = jnp.concatenate([trim_state, jnp.zeros(1)])  # + x_n=0
     x0_est = jnp.concatenate([trim_state, jnp.zeros(1)])
@@ -564,6 +596,7 @@ def aggregate_mc(result, *, trim_state: np.ndarray, trim_control: np.ndarray,
                  u_min: np.ndarray, u_max: np.ndarray,
                  wave_eta_main: np.ndarray | None = None,
                  target_pos_d: float | None = None,
+                 setpoint_control: np.ndarray | None = None,
                  governor_t0: float | None = None,
                  kp: float = KP_GOVERNOR,
                  u_target: float = U_TARGET,
@@ -572,7 +605,9 @@ def aggregate_mc(result, *, trim_state: np.ndarray, trim_control: np.ndarray,
 
     Args:
         result: MC sweep result (batched ClosedLoopResult).
-        trim_state, trim_control: scalar trim used to compute deviations.
+        trim_state, trim_control: NATURAL trim, used for the
+            cross-controller deviation metrics (``ride_height_rms`` vs
+            natural trim, pitch RMS, speed loss).
         controller_kind: tag stored in the aggregate.
         u_min, u_max: control bounds for the saturation fraction.
         wave_eta_main: optional (N, T) wave elevation at the main-foil
@@ -585,6 +620,13 @@ def aggregate_mc(result, *, trim_state: np.ndarray, trim_control: np.ndarray,
             stability — the right cross-setpoint comparison). When
             ``None``, falls back to ``trim_state[0]`` so the metric
             equals ``ride_height_rms`` by construction.
+        setpoint_control: Optional control vector of the controller's OWN
+            setpoint trim (C2.C2). When provided, ``flap_rms`` measures
+            deviation from the OWN trim flap — for pid_deeper this
+            changes the metric's reference vs the pre-C2.C2 vintage
+            (which referenced the natural-trim flap); the shift equals
+            the flap-trim delta (~0.07 deg). ``None`` falls back to
+            ``trim_control[0]``.
     """
     true_states = np.asarray(result.true_states[:, 1:, :])    # (N, T, n)
     controls = np.asarray(result.controls)                    # (N, T, m)
@@ -596,7 +638,12 @@ def aggregate_mc(result, *, trim_state: np.ndarray, trim_control: np.ndarray,
     theta = true_states[:, :, 1]
     u_fwd = true_states[:, :, 4]
 
-    flap_trim = float(trim_control[0])
+    # Flap-activity reference: the controller's OWN trim flap when a
+    # setpoint control is supplied (C2.C2), else the natural trim flap.
+    flap_trim = (
+        float(setpoint_control[0]) if setpoint_control is not None
+        else float(trim_control[0])
+    )
     # Per-controller setpoint for the intra-target RMS. Mechanical has no
     # explicit setpoint; pid_natural's default is the natural trim; only
     # pid_deeper differs. Falling back to ``trim_state[0]`` makes the new
@@ -1054,6 +1101,9 @@ def main():
             u_max=u_max,
             wave_eta_main=eta_main,
             target_pos_d=_target_pos_d_for_kind(kind, trim_state=trim_state),
+            setpoint_control=np.asarray(
+                _setpoint_trim_for_kind(kind, lqr=lqr).control
+            ),
             governor_t0=governor_t0[kind],
             kp=kp,
             u_target=U_TARGET,
@@ -1115,6 +1165,20 @@ def main():
                     "controller's setpoint. Captive: surge_enabled=False, "
                     "calibrated table sail, fixed u."
                 ),
+            },
+            # C2.C2 trim-at-setpoint: each controller's OWN trim (its
+            # calibration + initialization point). flap_rms is referenced
+            # to the own-trim flap — for pid_deeper this differs from the
+            # pre-C2.C2 vintage (natural-trim flap reference).
+            "setpoint_trims": {
+                kind: (lambda st: {
+                    "pos_d_m": float(st.state[0]),
+                    "theta_deg": float(np.degrees(st.state[1])),
+                    "flap_deg": float(np.degrees(st.control[0])),
+                    "elevator_deg": float(np.degrees(st.control[1])),
+                    "thrust_N": float(st.thrust),
+                })(_setpoint_trim_for_kind(kind, lqr=lqr))
+                for kind in CONTROLLERS
             },
         },
         "single_seed": {
