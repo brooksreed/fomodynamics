@@ -316,6 +316,44 @@ class TestWandLinkage:
 # TestWandLinkagePhysics
 # ---------------------------------------------------------------------------
 
+class TestRequiredPullrodOffset:
+    """Tests for the closed-form pullrod-offset inversion (C2.C2).
+
+    ``required_pullrod_offset`` is the ride-height-adjuster tuning used by
+    ``create_mechanical_wand_config`` to make the trim point an exact calm
+    equilibrium — the round-trip identity here is the lock on that chain.
+    """
+
+    @pytest.mark.parametrize("flap_target", [-0.15, -0.05, 0.0, 0.05, 0.2])
+    @pytest.mark.parametrize("wand_angle", [0.4, 0.6, 0.8])
+    def test_round_trip_identity(self, flap_target, wand_angle):
+        """compute(wand) == flap_target once the returned offset is applied."""
+        base = create_wand_linkage()
+        offset = base.required_pullrod_offset(wand_angle, flap_target)
+        tuned = create_wand_linkage(pullrod_offset=offset)
+        np.testing.assert_allclose(
+            float(tuned.compute(jnp.float64(wand_angle))), flap_target,
+            atol=1e-6,  # forward chain clamps via _safe_arcsin (eps 1e-7)
+        )
+
+    def test_zero_flap_at_fastpoint_needs_zero_offset(self):
+        """At the fastpoint, zero flap requires exactly zero offset."""
+        base = create_wand_linkage()
+        offset = base.required_pullrod_offset(float(DEFAULT_FASTPOINT), 0.0)
+        np.testing.assert_allclose(offset, 0.0, atol=1e-12)
+
+    def test_unreachable_flap_raises(self):
+        """A flap outside the bellcrank's reachable range raises ValueError.
+
+        With the default geometry (flap_lever == bellcrank_output) every
+        flap angle is reachable, so use a longer flap lever whose pushrod
+        displacement exceeds the bellcrank output arm's range.
+        """
+        base = create_wand_linkage(flap_lever=0.06)
+        with pytest.raises(ValueError, match="reachable range"):
+            base.required_pullrod_offset(0.6, 1.5)
+
+
 class TestWandLinkagePhysics:
     """Physics validation tests for expected behavior."""
 

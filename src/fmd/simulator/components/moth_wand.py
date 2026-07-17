@@ -455,6 +455,52 @@ class WandLinkage(eqx.Module):
         """
         return jax.grad(lambda wa: self.compute(wa))(wand_angle)
 
+    def required_pullrod_offset(
+        self, wand_angle: float, flap_angle: float
+    ) -> float:
+        """Pullrod offset that makes ``compute(wand_angle) == flap_angle``.
+
+        Closed-form inversion of the kinematic chain (each stage is
+        monotone over the linkage's operating range):
+
+        .. code-block:: text
+
+            pushrod_dy = L_f * sin(flap)
+            phi        = alpha - arccos(pushrod_dy / L_v + cos(alpha))
+            aft_dx     = L_p * sin(phi)
+            pullrod_dx = aft_dx / gearing_ratio
+            offset     = pullrod_dx - L_w * sin(wand_angle - fastpoint)
+
+        This is the ride-height adjuster setting a sailor would choose so
+        the passive linkage holds a given trim: at the trim wand angle the
+        linkage outputs exactly the trim flap, making the trim point an
+        equilibrium of the calm-water closed loop. Raises ``ValueError``
+        if the requested flap is outside the bellcrank's reachable range
+        (``pushrod_dy / L_v + cos(alpha)`` outside [-1, 1]).
+
+        Args:
+            wand_angle: Hull-relative wand angle (rad) at the operating
+                point (e.g. the trim wand angle from
+                :func:`wand_angle_from_state`).
+            flap_angle: Desired flap output (rad) at that wand angle.
+
+        Returns:
+            Pullrod offset (m).
+        """
+        pushrod_dy = self.flap_lever * np.sin(flap_angle)
+        cos_arg = pushrod_dy / self.bellcrank_output + np.cos(self.bellcrank_angle)
+        if not -1.0 <= cos_arg <= 1.0:
+            raise ValueError(
+                f"flap_angle={flap_angle} is outside the bellcrank's "
+                f"reachable range (arccos argument {cos_arg})."
+            )
+        bellcrank_phi = self.bellcrank_angle - np.arccos(cos_arg)
+        aft_dx = self.bellcrank_input * np.sin(bellcrank_phi)
+        pullrod_dx = aft_dx / self.gearing_ratio
+        return float(
+            pullrod_dx - self.wand_lever * np.sin(wand_angle - self.fastpoint)
+        )
+
 
 def create_wand_linkage(**overrides) -> WandLinkage:
     """Create a WandLinkage with default Moth parameters.
