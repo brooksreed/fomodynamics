@@ -562,21 +562,21 @@ def create_mechanical_wand_config(
     + MechanicalWandController. The wand angle is mechanically linked
     to the flap; elevator is held at trim.
 
-    The default ``pullrod_offset`` of ``0.005 m`` was originally tuned
-    for the ``MOTH_BIEKER_V3`` preset at 30° heel and 10 m/s forward
-    speed. An empirical re-scan (1 mm steps from -20 to +20 mm,
-    minimising ``|ride_height_mean - pos_d_trim|`` over a 30 s
-    calm-water sim) finds the true optimum at that operating point is
-    ``~0.00558 m`` — at the current default the steady-state ride
-    height is ~20 mm shallower than the LQR trim. We keep ``0.005`` as
-    the default for backward compatibility and a stable ``metrics.json``
-    in the canonical wand-vs-PID report; pass
-    ``linkage_overrides={"pullrod_offset": ...}`` to retune for a
-    different preset / heel / speed. The wave-induced steady-state bias
-    under SF Bay moderate waves (mechanical wand drifts ~25 cm
-    *deeper* than trim) is a separate dynamic effect of the linkage's
-    trig saturation and is *not* affected by this static-offset
-    calibration.
+    **Pullrod auto-tune (C2.C2)**: unless ``pullrod_offset`` is given in
+    ``linkage_overrides``, the ride-height adjuster is tuned in closed
+    form at the LQR trim — ``WandLinkage.required_pullrod_offset`` sets
+    the offset so the linkage outputs exactly the trim flap at the trim
+    wand angle (hull-frame, from ``wand_angle_from_state``). The trim
+    point is then an exact equilibrium of the calm-water closed loop
+    (given trim thrust, e.g. the speed governor's T0). This replaces the
+    historical hand-tuned constant ``0.005 m``, which was calibrated
+    against the pre-C1.D world-frame wand convention and left a ~1.6 cm
+    calm-water ride-height offset on the corrected physics (measured
+    C2.C1). Auto-tuning from the live trim also removes the
+    stale-constant failure mode for other presets / heels / speeds.
+    Wave-induced steady-state bias (wave rectification through the
+    linkage's trig nonlinearity) is a separate dynamic effect and is
+    *not* affected by this static calibration.
 
     Args:
         lqr: Pre-computed LQR design (for trim control and bounds).
@@ -584,7 +584,9 @@ def create_mechanical_wand_config(
         heel_angle: Static heel angle (rad).
         linkage_overrides: Optional dict of WandLinkage field overrides
             (e.g., pullrod_offset, gearing_ratio). If pullrod_offset is
-            not in overrides, the tuned default of 0.005 is used.
+            not in overrides, it is auto-tuned at the LQR trim (see
+            above); other overridden linkage fields are respected by the
+            auto-tune (the inversion runs on the overridden chain).
         encounter_distance_index: Optional state index of the plant's
             integrated encounter distance x_n (ENC-DIST, C1.C), forwarded
             to the ``WandSensor``. ``None`` (default) preserves the old
@@ -596,7 +598,10 @@ def create_mechanical_wand_config(
     Returns:
         Tuple of (sensor, estimator, controller).
     """
-    from fmd.simulator.components.moth_wand import create_wand_linkage
+    from fmd.simulator.components.moth_wand import (
+        create_wand_linkage,
+        wand_angle_from_state,
+    )
 
     sensor, estimator, u_min, u_max, elevator_trim = _build_wand_sensor_and_passthrough(
         lqr, params=params, heel_angle=heel_angle,
@@ -604,11 +609,25 @@ def create_mechanical_wand_config(
         num_states=num_states,
     )
 
-    # Controller: mechanical linkage
-    # Default pullrod_offset=0.005 tuned to eliminate steady-state offset
-    overrides = {"pullrod_offset": 0.005}
-    if linkage_overrides:
-        overrides.update(linkage_overrides)
+    # Controller: mechanical linkage. Auto-tune the pullrod offset (the
+    # ride-height adjuster) at the LQR trim unless explicitly overridden.
+    overrides = dict(linkage_overrides) if linkage_overrides else {}
+    if "pullrod_offset" not in overrides:
+        trim_wand_angle = float(
+            wand_angle_from_state(
+                pos_d=jnp.array(lqr.trim.state[0]),
+                theta=jnp.array(lqr.trim.state[1]),
+                wand_pivot_position=jnp.asarray(params.wand_pivot_position),
+                wand_length=DEFAULT_WAND_LENGTH,
+                heel_angle=heel_angle,
+            )
+        )
+        # Invert on the overridden chain (any non-offset linkage overrides
+        # change the required offset).
+        base_linkage = create_wand_linkage(**overrides)
+        overrides["pullrod_offset"] = base_linkage.required_pullrod_offset(
+            trim_wand_angle, float(lqr.trim.control[0])
+        )
     linkage = create_wand_linkage(**overrides)
 
     controller = MechanicalWandController(
@@ -651,6 +670,7 @@ def create_pid_wand_config(
     Kd: float = _DEFAULT_PID_KD,
     Kb: Optional[float] = None,
     target_pos_d: Optional[float] = None,
+    setpoint_trim=None,
     encounter_distance_index: Optional[int] = None,
     num_states: int = 5,
 ) -> tuple[Sensor, Estimator, Controller]:
@@ -658,27 +678,34 @@ def create_pid_wand_config(
 
     Uses ``WandSensor(include_speed_pitch=False)`` + ``PassthroughEstimator``
     + ``PIDController``. The PID acts on a closed-form nonlinear estimate
-    of ride height from wand angle (trim-attitude assumption: theta=0,
-    constant heel). The inversion formula bakes in ``cos(heel_angle)`` on
-    the body-z pivot component, making it pos_d-agnostic: under
-    ``theta = trim_theta`` and constant heel, the round-trip identity
-    ``estimate_pos_d(wand_angle_from_state(pos_d, trim_theta, heel)) == pos_d``
-    holds for ANY pos_d — not just at the natural trim. This means
-    ``target_pos_d`` overrides work without per-target re-tuning and
-    without steady-state inversion bias.
+    of ride height from wand angle (trim-attitude assumption:
+    theta=theta_ref, constant heel). The inversion formula bakes in
+    ``cos(heel_angle)`` on the body-z pivot component, making it
+    pos_d-agnostic: under ``theta = theta_ref`` and constant heel, the
+    round-trip identity
+    ``estimate_pos_d(wand_angle_from_state(pos_d, theta_ref, heel)) == pos_d``
+    holds for ANY pos_d.
 
-    The ``wand_angle_offset`` calibration is computed at construction time
-    so the inversion reproduces ``natural_pos_d`` when evaluated at the
-    trim wand angle (absorbing the trim_theta residual). The only remaining
-    bias is dynamic pitch perturbation away from trim_theta, which the
-    integrator averages out.
+    **Per-setpoint calibration (trim-at-setpoint workflow, C2.C2 /
+    Option D)**: the controller is calibrated at its OWN trim point —
+    the pinned trim at ``target_pos_d`` when a setpoint override is
+    given, the LQR's natural trim otherwise. ``theta_ref``,
+    ``flap_trim``, ``elevator_trim``, and the ``wand_angle_offset``
+    anchor all come from that trim, so the setpoint is an exact calm
+    equilibrium of the closed loop by construction (zero steady-state
+    bias, no integrator wind-toward-target transient; pair with a
+    thrust source supplying that trim's thrust, e.g. the
+    ``apply_speed_governor`` T0). The only remaining calm bias source is
+    dynamic pitch departure from the setpoint's own trim theta.
 
     Args:
-        lqr: Pre-computed LQR design (for trim state/control).
+        lqr: Pre-computed LQR design (for trim state/control, forward
+            speed, and control bounds).
         params: MothParams for geometry.
-        heel_angle: Static heel angle (rad). Used for both the wave-aware
-            sensor geometry and the PID inversion formula (``cos(heel_angle)``
-            factor on the body-z pivot component).
+        heel_angle: Static heel angle (rad). Used for the wave-aware
+            sensor geometry, the PID inversion formula (``cos(heel_angle)``
+            factor on the body-z pivot component), and the internal
+            pinned trim solve when ``target_pos_d`` is set.
         dt: Simulation timestep, used for the PID integral and derivative.
         Kp, Ki, Kd: PID gains. Defaults are conservative starting values.
         Kb: Anti-windup back-calculation gain. ``None`` (default) selects
@@ -686,15 +713,20 @@ def create_pid_wand_config(
             to ``0.0`` to disable anti-windup.
         target_pos_d: Optional override for the PID's setpoint (m, NED).
             ``None`` (default) uses ``lqr.trim.state[0]`` — the natural
-            trim ride height. When provided, the inversion is still
-            calibrated against the natural trim wand angle, but the new
-            pos_d-agnostic formula means the PID accurately tracks any
-            ``target_pos_d`` under theta=trim_theta without the 15 cm
-            steady-state bias that the old heel=0 formula produced.
+            trim ride height. When provided, the controller is calibrated
+            at the pinned trim solved at ``(target_pos_d, lqr.u_forward)``
+            (see ``setpoint_trim`` to supply a precomputed solve).
             Use this kwarg to set a safety margin below the natural trim,
             e.g. ``target_pos_d = compute_tip_at_surface_pos_d() + 0.30``
             (NB: in NED-positive-down, deeper = MORE POSITIVE pos_d,
             so use ``+ margin``, not ``- margin``).
+        setpoint_trim: Optional precomputed pinned trim
+            (``CasadiTrimResult``) at ``(target_pos_d, lqr.u_forward)``.
+            Only meaningful with ``target_pos_d``; when ``None`` the trim
+            is solved internally via ``find_moth_trim``. Pass this when
+            the caller already solved the same trim (e.g. for the speed
+            governor's T0) to guarantee bit-consistency and skip a solve.
+            Its pinned ``state[0]`` must match ``target_pos_d``.
         encounter_distance_index: Optional state index of the plant's
             integrated encounter distance x_n (ENC-DIST, C1.C), forwarded
             to the ``WandSensor``. ``None`` (default) preserves the old
@@ -715,39 +747,59 @@ def create_pid_wand_config(
     )
     wand_pivot = params.wand_pivot_position
 
-    # Trim values
-    trim_state = jnp.array(lqr.trim.state)
-    trim_control = jnp.array(lqr.trim.control)
-    # The closed-form inversion is *always* calibrated against the
-    # natural trim wand angle (the wand angle that the wand sensor
-    # produces when the boat is at the LQR trim point). The inversion
-    # offset is chosen so ``estimate_pos_d(trim_wand_angle) ==
-    # natural_pos_d``. The CONTROL TARGET (``pos_d_target``) is the
-    # ride height the PID drives toward — typically the natural trim,
-    # optionally a deeper safety-margin override. When the two differ,
-    # the PID sees a non-zero height_err at trim and integrates until
-    # the boat reaches the requested target.
-    natural_pos_d = float(trim_state[0])
-    pos_d_target = (
-        float(target_pos_d) if target_pos_d is not None else natural_pos_d
-    )
-    flap_trim = float(trim_control[0])
+    # Calibration trim = the controller's OWN trim point (per-setpoint
+    # calibration): the pinned trim at target_pos_d when a setpoint
+    # override is given, the LQR natural trim otherwise. theta_ref,
+    # flap_trim, elevator_trim, and the inversion offset anchor all come
+    # from this trim, so the setpoint is an exact calm equilibrium of the
+    # closed loop (given the matching trim thrust).
+    if target_pos_d is not None:
+        if setpoint_trim is None:
+            from fmd.simulator.trim_casadi import find_moth_trim
+
+            setpoint_trim = find_moth_trim(
+                params,
+                u_forward=lqr.u_forward,
+                target_pos_d=float(target_pos_d),
+                heel_angle=heel_angle,
+            )
+        cal_state = np.asarray(setpoint_trim.state)
+        cal_control = np.asarray(setpoint_trim.control)
+        if abs(float(cal_state[0]) - float(target_pos_d)) > 1e-6:
+            raise ValueError(
+                f"setpoint_trim.state[0]={float(cal_state[0])} does not match "
+                f"target_pos_d={float(target_pos_d)} — the calibration trim "
+                f"must be pinned at the PID setpoint."
+            )
+    else:
+        if setpoint_trim is not None:
+            raise ValueError(
+                "setpoint_trim was provided without target_pos_d; the "
+                "natural-trim configuration always calibrates at lqr.trim."
+            )
+        cal_state = np.asarray(lqr.trim.state)
+        cal_control = np.asarray(lqr.trim.control)
+
+    setpoint_pos_d = float(cal_state[0])
+    pos_d_target = setpoint_pos_d
+    flap_trim = float(cal_control[0])
+    elevator_trim = float(cal_control[1])
 
     # Inversion formula: -z_p*cos(heel) - L*cos(theta_w) + offset.
-    # The cos(heel) factor makes this pos_d-agnostic under theta=trim_theta
-    # and constant heel. The offset absorbs the trim_theta residual.
+    # The cos(heel) factor makes this pos_d-agnostic under theta=theta_ref
+    # and constant heel. The offset absorbs the theta_ref residual.
     wand_length = DEFAULT_WAND_LENGTH
     wand_pivot_z_body = float(wand_pivot[2])
-    theta_ref = float(trim_state[1])
+    theta_ref = float(cal_state[1])
 
-    # Calibrate angle offset so the inversion is exact at the trim
-    # wand angle. The trim wand angle is computed from the *actual* trim
-    # attitude (with heel_angle, trim theta) so the wand sensor at trim
-    # is consistent with what the EKF-free PID will see.
+    # Calibrate angle offset so the inversion is exact at the setpoint
+    # trim wand angle. The trim wand angle is computed from the *actual*
+    # trim attitude (with heel_angle, own trim theta) so the wand sensor
+    # at that trim is consistent with what the EKF-free PID will see.
     trim_wand_angle = float(
         wand_angle_from_state(
-            pos_d=trim_state[0],
-            theta=trim_state[1],
+            pos_d=jnp.array(setpoint_pos_d),
+            theta=jnp.array(theta_ref),
             wand_pivot_position=jnp.asarray(wand_pivot),
             wand_length=wand_length,
             heel_angle=heel_angle,
@@ -756,24 +808,22 @@ def create_pid_wand_config(
     # Inversion formula: -z_p*cos(heel) - L*cos(theta_w) + offset, where
     # theta_w (world-frame) = trim_wand_angle (hull-frame, WAND-FRAME fix,
     # §4.6) + theta_ref. The cos(heel) factor on z_p makes this
-    # pos_d-agnostic: under theta=trim_theta and constant heel,
-    # estimate_pos_d(wand_angle_from_state(pos_d, trim_theta, heel)) ==
-    # pos_d for any pos_d. The offset absorbs the trim_theta residual
-    # (z_p*cos(heel)*(cos(theta_trim)-1) and -x_p*sin(theta_trim)) so bias
+    # pos_d-agnostic: under theta=theta_ref and constant heel,
+    # estimate_pos_d(wand_angle_from_state(pos_d, theta_ref, heel)) ==
+    # pos_d for any pos_d. The offset absorbs the theta_ref residual
+    # (z_p*cos(heel)*(cos(theta_ref)-1) and -x_p*sin(theta_ref)) so bias
     # is zero at the operating point.
     # NOTE: cos(heel) goes on z_p ONLY — L*cos(theta_w) is unchanged.
     pos_d_est_without_offset = (
         -wand_pivot_z_body * np.cos(heel_angle)
         - wand_length * np.cos(trim_wand_angle + theta_ref)
     )
-    # Calibrate the inversion offset so estimate_pos_d(trim_wand_angle)
-    # reproduces the *natural* trim pos_d (not the override target).
-    # This way the PID's height_err = pos_d_est - pos_d_target equals
-    # ``natural - target`` at the natural trim, giving the integrator
-    # a non-zero signal to drive toward the requested target.
-    wand_angle_offset = natural_pos_d - pos_d_est_without_offset
+    # Anchor the offset at the setpoint trim itself: height_err is then
+    # exactly zero at the setpoint trim, making it a calm equilibrium
+    # (flap = flap_trim, elevator = elevator_trim, zero integrator).
+    wand_angle_offset = setpoint_pos_d - pos_d_est_without_offset
 
-    # Sanity check: round-trip identity at the natural trim wand angle.
+    # Sanity check: round-trip identity at the setpoint trim wand angle.
     pos_d_check = (
         -wand_pivot_z_body * np.cos(heel_angle)
         - wand_length * np.cos(trim_wand_angle + theta_ref)
@@ -782,10 +832,10 @@ def create_pid_wand_config(
     # ``assert`` is stripped under ``python -O`` and raises the wrong
     # exception type for a public-API precondition — escalate to
     # ``ValueError`` so the round-trip identity is always enforced.
-    if abs(pos_d_check - natural_pos_d) > 1e-9:
+    if abs(pos_d_check - setpoint_pos_d) > 1e-9:
         raise ValueError(
             f"PID wand-angle calibration failed: "
-            f"pos_d_check={pos_d_check}, natural_pos_d={natural_pos_d}"
+            f"pos_d_check={pos_d_check}, setpoint_pos_d={setpoint_pos_d}"
         )
 
     # Anti-windup gain. Aström back-calculation recipe Kb = 1 / Ki when
