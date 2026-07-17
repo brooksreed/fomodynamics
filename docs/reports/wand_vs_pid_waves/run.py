@@ -57,6 +57,7 @@ from fmd.simulator.moth_scenarios import (
     create_pid_wand_config,
 )
 from fmd.simulator.components.moth_forces import compute_tip_at_surface_pos_d
+from fmd.simulator.provenance import provenance_stamp
 from fmd.simulator.trim_casadi import find_moth_trim
 from fmd.simulator.params import MOTH_BIEKER_V3
 from fmd.simulator.params.presets import WAVE_SF_BAY_MODERATE
@@ -1129,6 +1130,10 @@ def main():
 
     # 7. metrics.json
     payload = {
+        # Provenance: which fmd produced this artifact (fmd_commit +
+        # install_mode + params_hash). editable/unmerged while the study
+        # branch is open; becomes a pinned vintage at the C2.F merge.
+        "provenance": provenance_stamp(MOTH_BIEKER_V3),
         "setup": {
             "u_forward_ms": U_FORWARD,
             "heel_angle_deg": float(np.degrees(HEEL_ANGLE)),

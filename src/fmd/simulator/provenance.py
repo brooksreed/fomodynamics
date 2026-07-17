@@ -51,6 +51,29 @@ def _git_head_commit(file_url: str) -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
+def _install_record_direct_url(package: str) -> str | None:
+    """Return the ``direct_url.json`` text for the actual install record.
+
+    A source tree on ``sys.path`` (report scripts insert ``src/``) exposes a
+    bare ``*.egg-info`` with no ``direct_url.json``; being first on the path
+    it wins ``distribution()`` and masks the real install record (venv
+    dist-info). Prefer whichever ``fomodynamics`` distribution carries a
+    ``direct_url.json`` — that is the pip/uv install record.
+    """
+    try:
+        dists = list(_metadata.distributions(name=package))
+    except TypeError:  # older importlib.metadata without the name filter
+        dists = [
+            d for d in _metadata.distributions()
+            if (d.metadata["Name"] or "").lower() == package.lower()
+        ]
+    for dist in dists:
+        text = dist.read_text("direct_url.json")
+        if text is not None:
+            return text
+    return None
+
+
 def get_fmd_provenance(package: str = "fomodynamics") -> dict[str, str | None]:
     """Return ``{"fmd_commit": <sha or None>, "fmd_install_mode": <mode>}``.
 
@@ -58,11 +81,7 @@ def get_fmd_provenance(package: str = "fomodynamics") -> dict[str, str | None]:
     (package not installed via pip/uv metadata, e.g. a dev checkout on
     ``PYTHONPATH``).
     """
-    try:
-        dist = _metadata.distribution(package)
-        direct_url_text = dist.read_text("direct_url.json")
-    except _metadata.PackageNotFoundError:
-        direct_url_text = None
+    direct_url_text = _install_record_direct_url(package)
 
     if direct_url_text is None:
         return {"fmd_commit": None, "fmd_install_mode": "unknown"}
