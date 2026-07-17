@@ -396,11 +396,15 @@ class Moth3DCasadiExact(CasadiDynamicSystem):
         if u_fwd is None:
             u_fwd = self.u_forward
 
-        # Use lookup table if available, otherwise affine model
+        # Use lookup table if available, otherwise affine model.
+        # Mirror of MothSailForce.compute_moth (JAX): the affine branch is
+        # clamped >= 0 (no negative sail thrust), which is what makes
+        # thrust_slope=-Kp a valid P speed-governor. Table branch unclamped
+        # (calibrated values all positive) to keep trims bit-identical.
         if self.sail_thrust_speeds:
             f_x = self._casadi_interp(u_fwd, self.sail_thrust_speeds, self.sail_thrust_values)
         else:
-            f_x = self.sail_thrust_coeff + self.sail_thrust_slope * u_fwd
+            f_x = cs.fmax(self.sail_thrust_coeff + self.sail_thrust_slope * u_fwd, 0.0)
 
         # NED→body rotation: thrust is horizontal in NED, rotate by pitch
         cos_theta = cs.cos(theta) if theta is not None else 1.0
