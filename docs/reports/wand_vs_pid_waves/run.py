@@ -916,7 +916,9 @@ def make_surge_psd_plot(out_dir, surge_psd):
     ax.axvline(gov_pole_hz, color="gray", ls="--", alpha=0.7,
                label=f"governor pole ~{gov_pole_hz:.2f} Hz")
     ax.axvline(1.0 / 3.0, color="k", ls=":", alpha=0.5, label="wave peak 1/Tp")
-    ax.set_xlabel("Frequency (Hz)"); ax.set_ylabel("Surge PSD (m²/s²/Hz)")
+    # Unnormalized periodogram — a band-separation diagnostic, not a
+    # calibrated PSD, so the y-axis is arbitrary units.
+    ax.set_xlabel("Frequency (Hz)"); ax.set_ylabel("Surge power (arb.)")
     ax.set_title(f"Surge spectrum — seed {SINGLE_SEED} (governor/wave separation)")
     ax.legend(fontsize=8); ax.grid(True, which="both", alpha=0.3)
     fig.tight_layout()

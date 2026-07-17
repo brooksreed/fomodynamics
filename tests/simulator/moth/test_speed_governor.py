@@ -189,6 +189,38 @@ def test_apply_speed_governor_requires_positive_kp(lqr):
         apply_speed_governor(moth, thrust0=75.5, kp=0.0, u_target=U_TARGET)
 
 
+# ---------------------------------------------------------------------------
+# Stationarity metric unit test (C2.C0 standard output)
+# ---------------------------------------------------------------------------
+
+
+def test_stationarity_metric_flags_decay_and_passes_steady():
+    """A monotonic surge decay (the C2.B runaway) must fail stationarity; a
+    flat-with-ripple window must pass."""
+    from fmd.analysis.closed_loop import compute_signal_drift, compute_stationarity
+
+    dt = 0.005
+    n = 10000  # 50 s window
+    t = np.arange(n) * dt
+
+    # Decaying surge: 10 -> ~7 m/s over the window (clearly non-stationary).
+    u_decay = 10.0 - 0.06 * t
+    pos_d_flat = -1.40 + 0.01 * np.sin(2 * np.pi * t / 3.0)
+    slope, drift = compute_signal_drift(u_decay, dt)
+    assert slope == pytest.approx(-0.06, rel=1e-3)
+    assert drift == pytest.approx(-0.06 * t[-1], rel=1e-3)
+    res_decay = compute_stationarity(u_decay, pos_d_flat, dt)
+    assert res_decay["passed"] is False
+    assert res_decay["u_drift_ms"] < -1.0
+
+    # Steady: flat mean + wave ripple, no trend -> passes.
+    rng = np.random.RandomState(0)
+    u_steady = 10.0 + 0.15 * np.sin(2 * np.pi * t / 3.0) + 0.01 * rng.randn(n)
+    res_steady = compute_stationarity(u_steady, pos_d_flat, dt)
+    assert res_steady["passed"] is True
+    assert abs(res_steady["u_drift_ms"]) < 0.5
+
+
 def test_governor_thrust0_matches_lqr_trim_at_natural_setpoint(lqr, trim_state):
     """T0 from the pinned solve at the natural setpoint reproduces the LQR
     design point's thrust (single-branch, consistent by construction)."""
