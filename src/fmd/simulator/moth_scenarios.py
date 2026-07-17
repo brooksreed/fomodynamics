@@ -245,6 +245,97 @@ from fmd.simulator.components.moth_forces import compute_tip_at_surface_pos_d  #
 
 
 # ---------------------------------------------------------------------------
+# Speed-governor sail factory (C2.C0)
+# ---------------------------------------------------------------------------
+#
+# The calibrated thrust *table* is a required-thrust curve (T(u) ≡ D_calm(u)
+# along the trim manifold), so using it as the dynamic law gives zero surge
+# stiffness — any persistent drag excess in waves makes the boat slide down
+# the manifold indefinitely (the C2.B runaway). The fix is a P speed-governor
+# "sailor model":
+#
+#     F_sail = T0 + Kp * (u_target - u)
+#
+# realised through the existing affine ``MothSailForce`` mode with
+# ``thrust_coeff = T0 + Kp*u_target`` and ``thrust_slope = -Kp`` (no new model
+# surface). With ``surge_enabled=True`` the sail is fed the live state speed
+# ``u``, so this is exactly the governor. See
+# ``docs/private/plans/wand_vs_pid_waves/thrust_governor_design.md`` (in blur).
+
+
+def governor_thrust0(
+    params: MothParams,
+    *,
+    target_pos_d: float,
+    u_target: float = 10.0,
+    heel_angle: float | None = None,
+) -> float:
+    """Pinned-trim thrust T0 (N) at a ride-height setpoint and speed.
+
+    T0 is the calm-water thrust that closes the trim equilibrium at
+    ``(target_pos_d, u_target)`` — the governor's operating point. ΔT(t) =
+    F_sail − T0 then isolates the wave added resistance. Uses the same pinned
+    CasADi trim solve as calibration/LQR (C1.E/C1.G machinery), so it is
+    single-branch and consistent with ``design_moth_lqr``'s trim.
+
+    Note: for the natural-trim controllers the caller should prefer reading
+    ``lqr.trim.thrust`` directly (bit-consistent with the LQR design point);
+    this helper is for setpoints that differ from the LQR trim (e.g. the
+    deeper-riding PID).
+    """
+    from fmd.simulator.trim_casadi import find_moth_trim
+
+    trim = find_moth_trim(
+        params,
+        u_forward=u_target,
+        target_pos_d=target_pos_d,
+        heel_angle=heel_angle,
+    )
+    return float(trim.thrust)
+
+
+def apply_speed_governor(
+    moth: Moth3D,
+    *,
+    thrust0: float,
+    kp: float,
+    u_target: float = 10.0,
+) -> Moth3D:
+    """Return a copy of ``moth`` whose sail is a P speed-governor.
+
+    Swaps ``moth.sail`` for an affine ``MothSailForce`` implementing
+    ``F_sail = max(thrust0 + kp*(u_target - u), 0)``, preserving the sail CE
+    positions (moment arm) from the original sail. The empty thrust table
+    selects the affine branch; ``surge_enabled=True`` on the plant then feeds
+    the live ``u``.
+
+    Requires ``moth.surge_enabled`` — a governor with a frozen ``u`` would be a
+    constant thrust, silently defeating the purpose.
+    """
+    import equinox as eqx
+
+    from fmd.simulator.components.moth_forces import MothSailForce
+
+    if not moth.surge_enabled:
+        raise ValueError(
+            "apply_speed_governor requires surge_enabled=True (the governor "
+            "reads the live state speed u); got surge_enabled=False. Use the "
+            "captive/towing-tank diagnostic path instead of a governor."
+        )
+    if kp <= 0.0:
+        raise ValueError(f"Governor Kp must be > 0 (restoring); got {kp}.")
+
+    governor_sail = MothSailForce(
+        thrust_coeff=float(thrust0 + kp * u_target),
+        thrust_slope=float(-kp),
+        ce_position_x=float(moth.sail.ce_position_x),
+        ce_position_z=float(moth.sail.ce_position_z),
+        # empty tables -> affine branch (the governor law)
+    )
+    return eqx.tree_at(lambda m: m.sail, moth, governor_sail)
+
+
+# ---------------------------------------------------------------------------
 # Wand scenario factory functions
 # ---------------------------------------------------------------------------
 
