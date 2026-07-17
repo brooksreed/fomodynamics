@@ -647,6 +647,7 @@ def create_pid_wand_config(
     # and constant heel. The offset absorbs the trim_theta residual.
     wand_length = DEFAULT_WAND_LENGTH
     wand_pivot_z_body = float(wand_pivot[2])
+    theta_ref = float(trim_state[1])
 
     # Calibrate angle offset so the inversion is exact at the trim
     # wand angle. The trim wand angle is computed from the *actual* trim
@@ -661,15 +662,18 @@ def create_pid_wand_config(
             heel_angle=heel_angle,
         )
     )
-    # Inversion formula: -z_p*cos(heel) - L*cos(theta_w) + offset.
-    # The cos(heel) factor on z_p makes this pos_d-agnostic: under
-    # theta=trim_theta and constant heel, estimate_pos_d(wand_angle_from_state(
-    # pos_d, trim_theta, heel)) == pos_d for any pos_d. The offset absorbs
-    # the trim_theta residual (z_p*cos(heel)*(cos(theta_trim)-1) and
-    # -x_p*sin(theta_trim)) so bias is zero at the operating point.
+    # Inversion formula: -z_p*cos(heel) - L*cos(theta_w) + offset, where
+    # theta_w (world-frame) = trim_wand_angle (hull-frame, WAND-FRAME fix,
+    # §4.6) + theta_ref. The cos(heel) factor on z_p makes this
+    # pos_d-agnostic: under theta=trim_theta and constant heel,
+    # estimate_pos_d(wand_angle_from_state(pos_d, trim_theta, heel)) ==
+    # pos_d for any pos_d. The offset absorbs the trim_theta residual
+    # (z_p*cos(heel)*(cos(theta_trim)-1) and -x_p*sin(theta_trim)) so bias
+    # is zero at the operating point.
     # NOTE: cos(heel) goes on z_p ONLY — L*cos(theta_w) is unchanged.
     pos_d_est_without_offset = (
-        -wand_pivot_z_body * np.cos(heel_angle) - wand_length * np.cos(trim_wand_angle)
+        -wand_pivot_z_body * np.cos(heel_angle)
+        - wand_length * np.cos(trim_wand_angle + theta_ref)
     )
     # Calibrate the inversion offset so estimate_pos_d(trim_wand_angle)
     # reproduces the *natural* trim pos_d (not the override target).
@@ -681,7 +685,7 @@ def create_pid_wand_config(
     # Sanity check: round-trip identity at the natural trim wand angle.
     pos_d_check = (
         -wand_pivot_z_body * np.cos(heel_angle)
-        - wand_length * np.cos(trim_wand_angle)
+        - wand_length * np.cos(trim_wand_angle + theta_ref)
         + wand_angle_offset
     )
     # ``assert`` is stripped under ``python -O`` and raises the wrong
@@ -716,6 +720,7 @@ def create_pid_wand_config(
         wand_angle_offset=jnp.array(wand_angle_offset),
         u_min=u_min,
         u_max=u_max,
+        theta_ref=jnp.array(theta_ref),
     )
 
     return sensor, estimator, controller

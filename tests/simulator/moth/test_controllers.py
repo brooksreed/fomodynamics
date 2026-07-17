@@ -497,15 +497,47 @@ def test_pid_wand_config_inversion_exact_at_arbitrary_pos_d_with_trim_theta():
             heel_angle=heel,
         ))
         # Call the same math the PID uses at runtime — exercises the
-        # exact formula, not a re-derivation.
+        # exact formula, not a re-derivation. wand_angle is hull-relative
+        # (WAND-FRAME fix, §4.6); theta_ref=trim_theta recovers the
+        # world-frame angle the inversion geometry is derived against.
         pos_d_est = _pid_pos_d_estimate(
             wand_angle,
             wand_pivot_z=float(pivot[2]),
             wand_length=DEFAULT_WAND_LENGTH,
             heel_angle=heel,
             wand_angle_offset=float(controller.wand_angle_offset),
+            theta_ref=float(controller.theta_ref),
         )
         assert abs(pos_d_est - pos_d) < 1e-6, (
             f"Inversion not exact at pos_d={pos_d:.4f}: "
             f"estimated {pos_d_est:.6f}, error {pos_d_est - pos_d:.2e}"
         )
+
+
+def test_pid_pos_d_estimate_theta_ref_sign_is_plus():
+    """``_pid_pos_d_estimate`` must add theta_ref inside the cosine, not
+    subtract it: it recovers the world-frame wand angle from the
+    hull-relative one (WAND-FRAME fix, §4.6: ``hull = world - theta``,
+    so ``world = hull + theta_ref``). A sign flip here (``- theta_ref``)
+    is the exact bug this pins — it would silently corrupt the PID's
+    ride-height estimate away from trim (see the round-trip test above).
+    """
+    wand_angle = 0.4
+    wand_pivot_z = -0.5
+    wand_length = DEFAULT_WAND_LENGTH
+    heel = np.deg2rad(30.0)
+    theta_ref = 0.05  # rad, nonzero and distinguishable from 0
+
+    plus = _pid_pos_d_estimate(
+        wand_angle, wand_pivot_z=wand_pivot_z, wand_length=wand_length,
+        heel_angle=heel, wand_angle_offset=0.0, theta_ref=theta_ref,
+    )
+    minus = _pid_pos_d_estimate(
+        wand_angle, wand_pivot_z=wand_pivot_z, wand_length=wand_length,
+        heel_angle=heel, wand_angle_offset=0.0, theta_ref=-theta_ref,
+    )
+    expected_plus = -wand_pivot_z * np.cos(heel) - wand_length * np.cos(wand_angle + theta_ref)
+    assert abs(plus - expected_plus) < 1e-12
+    # The two signs must disagree (confirms theta_ref actually enters the
+    # cosine, catching both a dropped term and a flipped one).
+    assert abs(plus - minus) > 1e-6

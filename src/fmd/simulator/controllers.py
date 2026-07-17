@@ -115,25 +115,38 @@ def _pid_pos_d_estimate(
     wand_length: float,
     heel_angle: float,
     wand_angle_offset: float,
+    theta_ref: float = 0.0,
 ) -> float:
     """Closed-form inversion: wand angle -> estimated ride height.
 
     Module-level helper so tests can call exactly the same math that
     ``PIDController.estimate_pos_d`` uses, without re-deriving it.
 
+    ``wand_angle`` here is the **hull-relative** angle (WAND-FRAME fix,
+    §4.6): ``wand_angle_from_state`` returns ``theta_w_world - theta``,
+    but this inversion's geometry is derived against the *world-frame*
+    wand angle ``theta_w_world``. ``theta_ref`` (the assumed/trim pitch,
+    ``theta ≈ theta_ref``) adds the pitch back so ``cos(wand_angle +
+    theta_ref) == cos(theta_w_world)``, restoring the pos_d-agnostic
+    round-trip identity under theta=theta_ref. Default 0.0 preserves the
+    pre-WAND-FRAME behaviour for any caller that still passes a
+    world-frame angle directly.
+
     Args:
-        wand_angle: Wand angle (rad).
+        wand_angle: Hull-relative wand angle (rad).
         wand_pivot_z: z-component of wand pivot in body frame (m).
         wand_length: Physical wand length (m).
         heel_angle: Static heel angle (rad).
         wand_angle_offset: Calibration offset (m).
+        theta_ref: Assumed pitch angle (rad) used to recover the
+            world-frame wand angle from the hull-relative measurement.
 
     Returns:
         Estimated pos_d (m, NED).
     """
     return (
         -wand_pivot_z * math.cos(heel_angle)
-        - wand_length * math.cos(wand_angle)
+        - wand_length * math.cos(wand_angle + theta_ref)
         + wand_angle_offset
     )
 
@@ -146,27 +159,36 @@ class PIDController(eqx.Module):
     applies PID on height error. Single output: main-flap command on
     top of trim. Elevator is held at its trim value.
 
-    Closed-form height inversion (calm water, theta=0, constant heel):
+    Closed-form height inversion (calm water, theta=theta_ref, constant heel):
 
     .. code-block:: text
 
         pos_d_est = -wand_pivot_z_body * cos(heel_angle)
-                    - wand_length * cos(wand_angle)
+                    - wand_length * cos(wand_angle + theta_ref)
                     + wand_angle_offset
+
+    ``wand_angle`` here is the **hull-relative** angle returned by
+    ``wand_angle_from_state`` (WAND-FRAME fix, §4.6:
+    ``theta_w_world - theta``). This inversion's geometry is derived
+    against the *world-frame* angle ``theta_w_world``, so ``theta_ref``
+    (the assumed/trim pitch) adds the pitch back:
+    ``cos(wand_angle + theta_ref) == cos(theta_w_world)`` when the true
+    ``theta == theta_ref``.
 
     The ``cos(heel_angle)`` factor projects the body-z pivot offset
     onto NED-down, making the inversion pos_d-agnostic: under
-    ``theta = trim_theta`` and constant heel, the round-trip identity
-    ``estimate_pos_d(wand_angle_from_state(pos_d, trim_theta, heel)) == pos_d``
+    ``theta = theta_ref`` and constant heel, the round-trip identity
+    ``estimate_pos_d(wand_angle_from_state(pos_d, theta_ref, heel)) == pos_d``
     holds for ANY pos_d (not just at the natural trim). This means
     ``target_pos_d`` overrides work without per-target re-tuning.
 
     ``wand_angle_offset`` is a per-construction calibration that
-    absorbs the trim_theta residual (the ``z_p * cos(heel) * (cos(theta_trim) - 1)``
-    and ``-x_p * sin(theta_trim)`` terms). At construction, offset is
+    absorbs the theta_ref residual (the ``z_p * cos(heel) * (cos(theta_ref) - 1)``
+    and ``-x_p * sin(theta_ref)`` terms). At construction, offset is
     chosen so ``estimate_pos_d(trim_wand_angle) == natural_pos_d``.
     The only remaining bias is dynamic pitch perturbation away from
-    trim_theta, which the integrator averages out.
+    ``theta_ref`` (normally the trim theta), which the integrator
+    averages out.
 
     The wand angle is read from ``x_est[0]`` (slot 0), as placed there
     by PassthroughEstimator.
@@ -192,7 +214,10 @@ class PIDController(eqx.Module):
             pivot component onto NED-down in the inversion formula.
         wand_angle_offset: Calibration offset (m) so the inversion
             reproduces ``natural_pos_d`` at the trim wand angle, absorbing
-            the trim_theta residual.
+            the theta_ref residual.
+        theta_ref: Assumed pitch angle (rad, normally trim theta) used to
+            recover the world-frame wand angle from the hull-relative
+            measurement (WAND-FRAME fix). Default 0.0.
         u_min: Lower control bounds [flap_min, elevator_min].
         u_max: Upper control bounds [flap_max, elevator_max].
     """
@@ -211,19 +236,22 @@ class PIDController(eqx.Module):
     wand_angle_offset: Array
     u_min: Array
     u_max: Array
+    theta_ref: Array = eqx.field(default_factory=lambda: jnp.array(0.0))
 
     def estimate_pos_d(self, wand_angle: Array) -> Array:
         """Closed-form inversion: wand angle -> estimated ride height.
 
-        Assumes trim attitude (theta=0) and constant heel angle. The
-        ``cos(heel_angle)`` factor on the z_p term makes this pos_d-agnostic:
-        for any pos_d reached under theta=trim_theta and constant heel, the
-        round-trip ``estimate_pos_d(wand_angle_from_state(pos_d, trim_theta,
-        heel)) == pos_d`` holds to numerical precision. The offset is
-        calibrated at construction time to absorb the trim_theta residual.
+        Assumes trim attitude (theta=theta_ref) and constant heel angle.
+        The ``cos(heel_angle)`` factor on the z_p term makes this
+        pos_d-agnostic: for any pos_d reached under theta=theta_ref and
+        constant heel, the round-trip ``estimate_pos_d(wand_angle_from_state(
+        pos_d, theta_ref, heel)) == pos_d`` holds to numerical precision.
+        The offset is calibrated at construction time to absorb the
+        theta_ref residual.
 
         Args:
-            wand_angle: Wand angle (rad). 0 = vertical, pi/2 = horizontal.
+            wand_angle: Hull-relative wand angle (rad; WAND-FRAME fix).
+                0 = vertical, pi/2 = horizontal, at theta=theta_ref.
 
         Returns:
             Estimated ride height ``pos_d`` (m, NED — negative = above water).
@@ -232,7 +260,7 @@ class PIDController(eqx.Module):
         # Python float stored as a static field, not a JAX array).
         return (
             -self.wand_pivot_z_body * math.cos(self.heel_angle)
-            - self.wand_length * jnp.cos(wand_angle)
+            - self.wand_length * jnp.cos(wand_angle + self.theta_ref)
             + self.wand_angle_offset
         )
 
