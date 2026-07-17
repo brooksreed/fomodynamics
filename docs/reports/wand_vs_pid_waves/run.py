@@ -270,15 +270,21 @@ def _target_pos_d_for_kind(controller_kind: str, *, trim_state: np.ndarray) -> f
     raise ValueError(f"Unknown controller_kind: {controller_kind}")
 
 
-def _build_controller_for_kind(lqr, controller_kind: str):
+def _build_controller_for_kind(
+    lqr, controller_kind: str, *, encounter_distance_index=None, num_states=5,
+):
     """Dispatch to the right factory for one of the three canonical kinds."""
     if controller_kind == "mechanical":
         return create_mechanical_wand_config(
             lqr, params=MOTH_BIEKER_V3, heel_angle=HEEL_ANGLE,
+            encounter_distance_index=encounter_distance_index,
+            num_states=num_states,
         )
     if controller_kind == "pid_natural":
         return create_pid_wand_config(
             lqr, params=MOTH_BIEKER_V3, heel_angle=HEEL_ANGLE, dt=DT,
+            encounter_distance_index=encounter_distance_index,
+            num_states=num_states,
         )
     if controller_kind == "pid_deeper":
         # Deeper-trim PID: parks the leeward foil tip 30 cm *below* the
@@ -292,6 +298,8 @@ def _build_controller_for_kind(lqr, controller_kind: str):
         return create_pid_wand_config(
             lqr, params=MOTH_BIEKER_V3, heel_angle=HEEL_ANGLE, dt=DT,
             target_pos_d=float(target_pos_d),
+            encounter_distance_index=encounter_distance_index,
+            num_states=num_states,
         )
     raise ValueError(f"Unknown controller_kind: {controller_kind}")
 
@@ -303,18 +311,38 @@ def run_single_seed(lqr, *, controller_kind: str, wave_seed: int):
     and the wave-bearing ``Environment`` so callers can post-compute aux
     trajectories (e.g., ``wave_eta_main`` for the dashboard wave panel).
     """
-    sensor, estimator, controller = _build_controller_for_kind(lqr, controller_kind)
-
     moth = Moth3D(
         MOTH_BIEKER_V3,
         u_forward=ConstantSchedule(U_FORWARD),
         heel_angle=HEEL_ANGLE,
+        enable_encounter_distance=True,
     )
+    # surge is dynamic (surge_enabled defaults True) so real speed varies
+    # with wave/control response even though u_forward is a constant
+    # nominal schedule — this is the varying-speed wave study ENC-DIST
+    # (C1.C) targets. Fail loud if that ever silently reverts to the
+    # u_forward(t)·t approximation (the C2.D landmine). A bare ``assert``
+    # is stripped under ``python -O``, which would silently restore that
+    # landmine, so this is a ``ValueError`` (matching moth_scenarios.py's
+    # PID calibration round-trip check).
+    if not moth.enable_encounter_distance:
+        raise ValueError(
+            "wand_vs_pid_waves requires enable_encounter_distance=True "
+            "(ENC-DIST, C1.C) — got False."
+        )
+    sensor, estimator, controller = _build_controller_for_kind(
+        lqr, controller_kind,
+        encounter_distance_index=moth.x_n_index, num_states=moth.num_states,
+    )
+
     trim_state = jnp.array(lqr.trim.state)
     trim_control = jnp.array(lqr.trim.control)
-    x0_true = trim_state  # start at trim, let waves perturb us
-    x0_est = trim_state
-    P0 = jnp.eye(5) * 0.1
+    # The PassthroughEstimator's pseudo-state only ever fills slot 0 (wand
+    # angle); the rest are zero filler. It must still match the plant's
+    # num_states so the pipeline's elementwise x_true - x_est stays valid.
+    x0_true = jnp.concatenate([trim_state, jnp.zeros(1)])  # + x_n=0
+    x0_est = jnp.concatenate([trim_state, jnp.zeros(1)])
+    P0 = jnp.eye(moth.num_states) * 0.1
 
     wave_params = attrs.evolve(WAVE_SF_BAY_MODERATE, mean_direction=np.pi,
                                seed=int(wave_seed))
@@ -350,17 +378,29 @@ def run_single_seed(lqr, *, controller_kind: str, wave_seed: int):
 
 def run_monte_carlo(lqr, *, controller_kind: str, n_seeds: int):
     """Run a vmap-batched 60s sweep over n_seeds wave realizations."""
-    sensor, estimator, controller = _build_controller_for_kind(lqr, controller_kind)
-
     moth = Moth3D(
         MOTH_BIEKER_V3,
         u_forward=ConstantSchedule(U_FORWARD),
         heel_angle=HEEL_ANGLE,
+        enable_encounter_distance=True,
     )
+    if not moth.enable_encounter_distance:
+        raise ValueError(
+            "wand_vs_pid_waves requires enable_encounter_distance=True "
+            "(ENC-DIST, C1.C) — got False."
+        )
+    sensor, estimator, controller = _build_controller_for_kind(
+        lqr, controller_kind,
+        encounter_distance_index=moth.x_n_index, num_states=moth.num_states,
+    )
+
     trim_state = jnp.array(lqr.trim.state)
-    P0 = jnp.eye(5) * 0.1
-    x0_true_batch = jnp.tile(trim_state, (n_seeds, 1))
-    x0_est_batch = jnp.tile(trim_state, (n_seeds, 1))
+    # See run_single_seed: x0_est must match the plant's num_states.
+    x0_true = jnp.concatenate([trim_state, jnp.zeros(1)])  # + x_n=0
+    x0_est = jnp.concatenate([trim_state, jnp.zeros(1)])
+    P0 = jnp.eye(moth.num_states) * 0.1
+    x0_true_batch = jnp.tile(x0_true, (n_seeds, 1))
+    x0_est_batch = jnp.tile(x0_est, (n_seeds, 1))
 
     # One Environment per seed (wave field built deterministically from
     # WaveParams.seed)
@@ -418,13 +458,18 @@ def _wave_eta_main_per_seed(
     *,
     seeds: list[int],
     foil_pos: np.ndarray,
+    x_n_index: int,
 ) -> np.ndarray:
     """Compute per-seed main-foil wave elevation, shape (N, T).
 
     Mirrors the elevation query inside ``Moth3D.compute_aux``: the main
-    foil's NED north position is ``u * t + eff_x * cos(theta) + eff_z *
-    sin(theta)`` and the surface elevation at that point + time is the
-    wave-aware reference for the breach metric.
+    foil's NED north position is ``x_n + eff_x * cos(theta) + eff_z *
+    sin(theta)``, where ``x_n`` is the plant's integrated encounter
+    distance state (ENC-DIST, C1.C) — ``∫(u·cosθ + w·sinθ) dt`` — not the
+    naive ``u(t) * t`` approximation. The surface elevation at that point
+    + time is the wave-aware reference for the breach metric. Requires
+    the plant to have been built with ``enable_encounter_distance=True``
+    (see ``run_single_seed`` / ``run_monte_carlo``).
     """
     n_seeds, n_steps, _ = true_states.shape
     times = np.arange(n_steps) * DT
@@ -435,12 +480,12 @@ def _wave_eta_main_per_seed(
         )
         env = Environment.with_waves(wave_params)
         theta_k = true_states[k, :, 1]
-        u_k = true_states[k, :, 4]
+        x_n_k = true_states[k, :, x_n_index]
         cos_th = np.cos(theta_k)
         sin_th = np.sin(theta_k)
-        # x_main_ned = u * t + eff_main_x * cos(theta) + eff_main_z * sin(theta)
+        # x_main_ned = x_n + eff_main_x * cos(theta) + eff_main_z * sin(theta)
         # where eff_main_{x,z} = foil_pos relative to CG (already in body frame).
-        x_main_ned = u_k * times + foil_pos[0] * cos_th + foil_pos[2] * sin_th
+        x_main_ned = x_n_k + foil_pos[0] * cos_th + foil_pos[2] * sin_th
         # env.wave_field.elevation is JAX-traceable but works fine with vmap;
         # here we just do a loop in t for simplicity (50 × 12000 = 600k calls).
         eta_main = np.asarray(
@@ -822,6 +867,7 @@ def main():
         MOTH_BIEKER_V3,
         u_forward=ConstantSchedule(U_FORWARD),
         heel_angle=HEEL_ANGLE,
+        enable_encounter_distance=True,
     )
     u_min = np.asarray(moth.control_lower_bounds)
     u_max = np.asarray(moth.control_upper_bounds)
@@ -838,7 +884,8 @@ def main():
     for kind in CONTROLLERS:
         true_states_k = np.asarray(mc_results[kind].true_states[:, 1:, :])
         eta_main = _wave_eta_main_per_seed(
-            true_states_k, seeds=seeds, foil_pos=foil_pos
+            true_states_k, seeds=seeds, foil_pos=foil_pos,
+            x_n_index=moth.x_n_index,
         )
         mc_agg[kind] = aggregate_mc(
             mc_results[kind],

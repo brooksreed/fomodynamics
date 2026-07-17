@@ -396,6 +396,8 @@ def _build_wand_sensor_and_passthrough(
     *,
     params: MothParams,
     heel_angle: float,
+    encounter_distance_index: Optional[int] = None,
+    num_states: int = 5,
 ) -> tuple[WandSensor, "PassthroughEstimator", Array, Array, float]:
     """Build the wand-only sensor/estimator/bounds triple shared by the
     mechanical-wand and PID-wand factories.
@@ -411,6 +413,19 @@ def _build_wand_sensor_and_passthrough(
         lqr: Pre-computed LQR design (for trim control and forward speed).
         params: MothParams for geometry.
         heel_angle: Static heel angle (rad).
+        encounter_distance_index: Optional state index of the plant's
+            integrated encounter distance x_n (ENC-DIST, C1.C). When set,
+            the wand sensor reads the true encounter position from state
+            instead of the constant-speed ``fwd_speed_func(t)·t``
+            estimate. ``None`` (default) preserves the old behaviour —
+            callers must opt in.
+        num_states: Pseudo-state length for the ``PassthroughEstimator``.
+            Must equal the plant's ``num_states`` (only slot 0, the wand
+            angle, is meaningful; the rest are zero filler) — the closed-
+            loop pipeline diffs ``x_true - x_est`` elementwise, so a
+            mismatch raises a shape error. Default 5 (no x_n); pass the
+            plant's ``num_states`` (6) when ``encounter_distance_index``
+            is set.
 
     Returns:
         Tuple of (sensor, estimator, u_min, u_max, elevator_trim).
@@ -427,10 +442,11 @@ def _build_wand_sensor_and_passthrough(
         include_speed_pitch=False,
         R=R_sensor,
         fwd_speed_func=ConstantSchedule(u_forward),
+        encounter_distance_index=encounter_distance_index,
     )
 
     # Estimator: passthrough (wand angle -> slot 0)
-    estimator = PassthroughEstimator(n_states=5)
+    estimator = PassthroughEstimator(n_states=num_states)
 
     # Controller bounds (and elevator trim, shared across both factories)
     moth = Moth3D(params, u_forward=ConstantSchedule(u_forward), heel_angle=heel_angle)
@@ -446,6 +462,8 @@ def create_mechanical_wand_config(
     params: MothParams = MOTH_BIEKER_V3,
     heel_angle: float = np.deg2rad(30.0),
     linkage_overrides: Optional[dict] = None,
+    encounter_distance_index: Optional[int] = None,
+    num_states: int = 5,
 ) -> tuple[Sensor, Estimator, Controller]:
     """Create mechanical wand sensor/estimator/controller triple.
 
@@ -476,6 +494,13 @@ def create_mechanical_wand_config(
         linkage_overrides: Optional dict of WandLinkage field overrides
             (e.g., pullrod_offset, gearing_ratio). If pullrod_offset is
             not in overrides, the tuned default of 0.005 is used.
+        encounter_distance_index: Optional state index of the plant's
+            integrated encounter distance x_n (ENC-DIST, C1.C), forwarded
+            to the ``WandSensor``. ``None`` (default) preserves the old
+            constant-speed ``u·t`` estimate.
+        num_states: Pseudo-state length for the ``PassthroughEstimator``;
+            must equal the plant's ``num_states`` (see
+            ``_build_wand_sensor_and_passthrough``). Default 5.
 
     Returns:
         Tuple of (sensor, estimator, controller).
@@ -483,7 +508,9 @@ def create_mechanical_wand_config(
     from fmd.simulator.components.moth_wand import create_wand_linkage
 
     sensor, estimator, u_min, u_max, elevator_trim = _build_wand_sensor_and_passthrough(
-        lqr, params=params, heel_angle=heel_angle
+        lqr, params=params, heel_angle=heel_angle,
+        encounter_distance_index=encounter_distance_index,
+        num_states=num_states,
     )
 
     # Controller: mechanical linkage
@@ -533,6 +560,8 @@ def create_pid_wand_config(
     Kd: float = _DEFAULT_PID_KD,
     Kb: Optional[float] = None,
     target_pos_d: Optional[float] = None,
+    encounter_distance_index: Optional[int] = None,
+    num_states: int = 5,
 ) -> tuple[Sensor, Estimator, Controller]:
     """Create wand-only PID sensor/estimator/controller triple.
 
@@ -575,6 +604,13 @@ def create_pid_wand_config(
             e.g. ``target_pos_d = compute_tip_at_surface_pos_d() + 0.30``
             (NB: in NED-positive-down, deeper = MORE POSITIVE pos_d,
             so use ``+ margin``, not ``- margin``).
+        encounter_distance_index: Optional state index of the plant's
+            integrated encounter distance x_n (ENC-DIST, C1.C), forwarded
+            to the ``WandSensor``. ``None`` (default) preserves the old
+            constant-speed ``u·t`` estimate.
+        num_states: Pseudo-state length for the ``PassthroughEstimator``;
+            must equal the plant's ``num_states`` (see
+            ``_build_wand_sensor_and_passthrough``). Default 5.
 
     Returns:
         Tuple of (sensor, estimator, controller).
@@ -582,7 +618,9 @@ def create_pid_wand_config(
     from fmd.simulator.components.moth_wand import wand_angle_from_state
 
     sensor, estimator, u_min, u_max, elevator_trim = _build_wand_sensor_and_passthrough(
-        lqr, params=params, heel_angle=heel_angle
+        lqr, params=params, heel_angle=heel_angle,
+        encounter_distance_index=encounter_distance_index,
+        num_states=num_states,
     )
     wand_pivot = params.wand_pivot_position
 
