@@ -693,3 +693,79 @@ class TestMoth3DExtendedRegimeEquivalence:
             np.testing.assert_allclose(
                 np.array(casadi_B), jax_B, rtol=ext_jac_rtol, atol=ext_jac_atol,
             )
+
+
+class TestMoth3DFreeSurfaceLiftEquivalence:
+    """C1.F: parity for the FSL knobs (enable_free_surface_lift,
+    ventilation_sharpness) in both settings.
+
+    The default-ON case is covered by every test above; these lock the
+    non-default configurations so the mirror cannot silently drift.
+    """
+
+    def _pair(self, enable_fsl: bool, sharpness: float):
+        jax_model = Moth3D(
+            MOTH_BIEKER_V3,
+            u_forward=ConstantSchedule(U_FORWARD),
+            heel_angle=HEEL_ANGLE,
+            ventilation_mode=VENTILATION_MODE,
+            ventilation_threshold=VENTILATION_THRESHOLD,
+            surge_enabled=False,
+            ventilation_sharpness=sharpness,
+            enable_free_surface_lift=enable_fsl,
+        )
+        casadi_model = Moth3DCasadiExact(
+            MOTH_BIEKER_V3,
+            heel_angle=HEEL_ANGLE,
+            ventilation_mode=VENTILATION_MODE,
+            ventilation_threshold=VENTILATION_THRESHOLD,
+            surge_enabled=False,
+            u_forward=U_FORWARD,
+            ventilation_sharpness=sharpness,
+            enable_free_surface_lift=enable_fsl,
+        )
+        return jax_model, casadi_model
+
+    @pytest.mark.parametrize(
+        "enable_fsl,sharpness",
+        [(False, 6.0), (True, 3.0), (False, 3.0)],
+        ids=["fsl-off", "sharpness-3", "fsl-off-sharpness-3"],
+    )
+    def test_level0_derivative_near_surface(self, enable_fsl, sharpness, rng):
+        """Derivative parity across the approach-to-surface band where the
+        FSL factor varies most (foil center depth ~ 0.1-0.5 m)."""
+        jax_model, casadi_model = self._pair(enable_fsl, sharpness)
+        f = casadi_model.dynamics_function()
+
+        for _ in range(60):
+            x = np.array([
+                rng.uniform(-1.55, -1.0),   # pos_d: near-surface band
+                rng.uniform(-0.15, 0.15),   # theta
+                rng.uniform(-1, 1),         # w
+                rng.uniform(-1, 1),         # q
+                rng.uniform(5, 12),         # u
+            ])
+            u = np.array([
+                rng.uniform(-0.17, 0.26),
+                rng.uniform(-0.05, 0.10),
+            ])
+
+            jax_deriv = np.array(jax_model.forward_dynamics(jnp.array(x), jnp.array(u)))
+            casadi_deriv = np.array(f(x, u)).flatten()
+
+            np.testing.assert_allclose(
+                casadi_deriv, jax_deriv, rtol=DERIV_RTOL, atol=DERIV_ATOL,
+                err_msg=f"FSL parity mismatch at state: {x}",
+            )
+
+    def test_fsl_changes_dynamics_near_surface(self):
+        """Sanity: the flag is live — near the surface, FSL on vs off must
+        produce different heave accelerations (guards against a silently
+        dead flag passing parity trivially)."""
+        jax_on, _ = self._pair(True, 6.0)
+        jax_off, _ = self._pair(False, 6.0)
+        x = jnp.array([-1.30, 0.0, 0.0, 0.0, 10.0])
+        u = jnp.array([0.05, 0.0])
+        d_on = np.array(jax_on.forward_dynamics(x, u))
+        d_off = np.array(jax_off.forward_dynamics(x, u))
+        assert abs(d_on[2] - d_off[2]) > 1e-3

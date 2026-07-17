@@ -30,6 +30,10 @@ import casadi as cs
 import numpy as np
 
 from fmd.simulator.casadi.moth_3d import Moth3DCasadiExact
+from fmd.simulator.components.moth_forces import (
+    compute_depth_factor,
+    compute_foil_ned_depth,
+)
 from fmd.simulator.moth_3d import MAIN_FLAP_MAX, MAIN_FLAP_MIN
 from fmd.simulator.params.moth import MothParams
 
@@ -52,6 +56,32 @@ _W_CTRL = 1e-8    # Phase 1: light control uniqueness
 # These only affect which feasible point IPOPT chooses, not feasibility itself.
 _W_HARD_THRUST = 1e-2   # reference-centered: min (thrust - T_ref)^2 / scale^2
 _W_HARD_CTRL = 1e-3     # light control regularization
+
+# pos_d (ride-height) regularization — closes the trim null space.
+# Ride height is nearly a null direction of the force balance: main-foil lift is
+# almost flat with depth until the leeward tip breaches the surface, so neither
+# phase pins pos_d and the solve lands wherever the initial guess / seed cache
+# drifts (an ~18% cold thrust spread at 10 m/s). A soft quadratic pull toward a
+# reference ride height selects a single deterministic branch. The term is exactly
+# zero at a pinned pos_d (pos_d_ref := target_pos_d when pinned), so pinned-target
+# trims are untouched by construction.
+_W_POS_D = 1e-3       # Phase 1: soft pos_d pull (branch selection)
+_W_HARD_POS_D = 1e-3  # Phase 2: pos_d regularization within the feasible manifold
+
+# Interim default ride-height reference (m, NED; negative = above the water).
+# -1.40 m is the highest-riding equilibrium that keeps the leeward foil tip
+# submerged with a ~2 cm margin across the calibration range (6-20 m/s) at 30 deg
+# heel; the low-speed nose-up case is binding (higher AoA raises the tip). The
+# force-balance existence ceiling is ~-1.50 m (tip breach). INTERIM: this is a
+# named reference, not a geometry-derived value — revisit once the free-surface
+# lift correction gives ride height a physical lift gradient and the thrust table
+# is recalibrated against the final physics.
+DEFAULT_POS_D_REF = -1.40
+
+# Submergence margin (m) added below the tip-at-surface depth for the default
+# Phase 1 initial guess. Kept deeper than the reference so cold solves start
+# below the ventilation cliff and cannot latch onto a ventilated branch.
+_INITIAL_GUESS_SUBMERGENCE = 0.15
 
 
 @dataclass(frozen=True)
@@ -163,6 +193,14 @@ class CasadiTrimResult:
             f"Trim solver: {status} at u={u_target} m/s"
             f" (iter={self.iter_count}, {self.solve_time:.3f}s)"
         )
+        tip_depth = self.diagnostics.get("leeward_tip_depth")
+        depth_factor = self.diagnostics.get("depth_factor")
+        if tip_depth is not None and depth_factor is not None:
+            breach = " (BREACHED)" if tip_depth < 0 else ""
+            lines.append(
+                f"  Ventilation margin: leeward tip {tip_depth * 100:+.2f} cm"
+                f"{breach}, depth_factor {depth_factor:.3f}"
+            )
         lines.append("")
 
         # Constraint violations (from xdot values)
@@ -239,6 +277,7 @@ def _create_model(
     heel_angle: float,
     ventilation_mode: str,
     ventilation_threshold: float,
+    ventilation_sharpness: float = 6.0,
 ) -> Moth3DCasadiExact:
     """Create zero-thrust CasADi model for trim solving."""
     p0 = attrs.evolve(
@@ -253,6 +292,7 @@ def _create_model(
         ventilation_mode=ventilation_mode,
         ventilation_threshold=ventilation_threshold,
         surge_enabled=True,
+        ventilation_sharpness=ventilation_sharpness,
     )
 
 
@@ -343,13 +383,16 @@ def _geometry_initial_guess(
 ) -> np.ndarray:
     """Compute initial guess from foil geometry.
 
-    Sets pos_d where the main foil's leeward tip is at the water surface,
-    then lowers the boat 5cm for more submergence. When targets are set,
-    uses them instead of defaults.
+    Sets pos_d well below where the main foil's leeward tip breaches the surface,
+    so cold solves start deep and well-conditioned (away from the ventilation
+    cliff) regardless of the regularization reference. When targets are set, uses
+    them instead of defaults.
     """
     eff_z = float(params.main_foil_position[2])
     tip_rise = (float(params.main_foil_span) / 2) * np.sin(heel_angle)
-    pos_d_guess = tip_rise - eff_z * np.cos(heel_angle) + 0.05
+    # tip-at-surface pos_d + a submergence margin. Deeper than the reference on
+    # purpose: starting below the cliff avoids converging to a ventilated branch.
+    pos_d_guess = tip_rise - eff_z * np.cos(heel_angle) + _INITIAL_GUESS_SUBMERGENCE
 
     if target_pos_d is not None:
         pos_d_guess = target_pos_d
@@ -377,6 +420,7 @@ def _build_nlp(
     params: MothParams,
     u_target: float,
     scales: CharacteristicScales = DEFAULT_SCALES,
+    pos_d_ref: float = DEFAULT_POS_D_REF,
 ) -> tuple:
     """Build Phase 1 penalty NLP (relaxed tol, robust convergence).
 
@@ -384,6 +428,10 @@ def _build_nlp(
         J = sum((xdot_i / xdot_scale_i)^2)                           # residual
           + W_THRUST * (thrust / thrust_scale)^2                      # quadratic thrust reg
           + W_CTRL * ((flap / flap_scale)^2 + (elev / elev_scale)^2)  # control reg
+          + W_POS_D * ((pos_d - pos_d_ref) / pos_d_scale)^2           # branch selection
+
+    ``pos_d_ref`` centers the ride-height regularization; pass ``target_pos_d``
+    when pos_d is pinned so the term vanishes at the pinned point.
 
     Returns (solver, lbz, ubz, f_xdot).
     """
@@ -398,8 +446,9 @@ def _build_nlp(
     ctrl_obj = _W_CTRL * (
         (z[5] / scales.flap_rad) ** 2 + (z[6] / scales.elev_rad) ** 2
     )
+    pos_d_obj = _W_POS_D * ((z[0] - pos_d_ref) / scales.pos_d_m) ** 2
 
-    objective = residual_obj + thrust_obj + ctrl_obj
+    objective = residual_obj + thrust_obj + ctrl_obj + pos_d_obj
 
     lbz, ubz = _variable_bounds(params, u_target)
 
@@ -421,11 +470,13 @@ def _build_nlp_hard(
     params: MothParams,
     u_target: float,
     scales: CharacteristicScales = DEFAULT_SCALES,
+    pos_d_ref: float = DEFAULT_POS_D_REF,
 ) -> tuple:
     """Build Phase 2 hard-constraint NLP with reference-centered thrust.
 
     Constraints: xdot[0,2,3,4] = 0  (4 equality, drop theta_dot = q which is pinned)
     Objective: W * (thrust - T_ref)^2 / scale^2 + W_ctrl * controls^2 / scale^2
+             + W_pos_d * (pos_d - pos_d_ref)^2 / scale^2
 
     The thrust term is centered on Phase 1's thrust (T_ref), not on zero.
     This avoids the zero-thrust attractor that occurs with absolute min(thrust^2),
@@ -454,6 +505,7 @@ def _build_nlp_hard(
         + _W_HARD_CTRL * (
             (z[5] / scales.flap_rad) ** 2 + (z[6] / scales.elev_rad) ** 2
         )
+        + _W_HARD_POS_D * ((z[0] - pos_d_ref) / scales.pos_d_m) ** 2
     )
 
     nlp = {"x": z, "f": objective, "g": g, "p": T_ref}
@@ -547,6 +599,45 @@ def _sanity_check(
     return warnings
 
 
+def compute_ventilation_margin(
+    params: MothParams,
+    state: np.ndarray,
+    heel_angle: float,
+) -> tuple[float, float]:
+    """Leeward main-foil tip depth (m, + = submerged) and depth_factor at a trim.
+
+    The ventilation margin (distance to the free surface at the leeward tip) is
+    the racing-relevant diagnostic: it tells you how much ride height is left
+    before the tip breaches and lift falls off.
+
+    Both quantities derive from the same foil-center depth via
+    ``compute_foil_ned_depth`` — the exact expression the lift model uses (line
+    355 / 505), including the ``z*cos(heel)*cos(theta)`` term — so ``depth_factor``
+    here matches the ventilation factor the simulator actually applies, and the
+    tip depth is its center minus the half-span rise (identical to
+    ``compute_leeward_tip_depth``). Note ``depth_factor`` only starts to drop once
+    the exposed span fraction passes the ventilation threshold (~30%), so the tip
+    can be slightly above the surface while lift is still nearly intact; tip depth
+    is the more conservative (earlier-warning) margin.
+
+    Returns:
+        (leeward_tip_depth_m, depth_factor). tip depth positive = submerged.
+    """
+    pos_d = float(state[0])
+    theta = float(state[1])
+    cg_offset = params.combined_cg_offset
+    main_x = float(params.main_foil_position[0] - cg_offset[0])
+    main_z = float(params.main_foil_position[2] - cg_offset[2])
+    span = float(params.main_foil_span)
+
+    foil_center_depth = float(compute_foil_ned_depth(
+        pos_d, main_x, main_z, theta, heel_angle,
+    ))
+    tip_depth = foil_center_depth - (span / 2.0) * np.sin(heel_angle)
+    depth_factor = float(compute_depth_factor(foil_center_depth, span, heel_angle))
+    return tip_depth, depth_factor
+
+
 def find_casadi_trim(
     params: MothParams,
     u_target: float,
@@ -558,6 +649,7 @@ def find_casadi_trim(
     target_pos_d: float | None = None,
     z0: np.ndarray | None = None,
     fixed_controls: dict[str, float] | None = None,
+    ventilation_sharpness: float = 6.0,
 ) -> CasadiTrimResult:
     """Find trim equilibrium using two-phase CasADi/IPOPT solver.
 
@@ -570,6 +662,7 @@ def find_casadi_trim(
         heel_angle: Static heel angle (rad). Default 30 degrees.
         ventilation_mode: "smooth" or "binary".
         ventilation_threshold: Ventilation onset threshold.
+        ventilation_sharpness: tanh gain of the ventilation cutoff.
         scales: Characteristic scales for NLP normalization.
         target_theta: If set, pin theta to this value (rad).
         target_pos_d: If set, pin pos_d to this value (m).
@@ -585,10 +678,16 @@ def find_casadi_trim(
     """
     t0 = time.monotonic()
 
-    model = _create_model(params, heel_angle, ventilation_mode, ventilation_threshold)
+    model = _create_model(params, heel_angle, ventilation_mode,
+                          ventilation_threshold, ventilation_sharpness)
+
+    # Ride-height regularization reference. When pos_d is pinned, center the
+    # regularization on the pin so the term is exactly zero at the solution and
+    # pinned-target trims are unaffected; otherwise pull toward the default.
+    pos_d_ref = target_pos_d if target_pos_d is not None else DEFAULT_POS_D_REF
 
     # Phase 1: penalty formulation (robust, relaxed tol)
-    solver1, lbz, ubz, f_xdot1 = _build_nlp(model, params, u_target, scales)
+    solver1, lbz, ubz, f_xdot1 = _build_nlp(model, params, u_target, scales, pos_d_ref)
 
     # Apply target pins to bounds
     if target_theta is not None:
@@ -659,7 +758,7 @@ def find_casadi_trim(
     )
 
     # Phase 2: hard constraints (warm start from Phase 1)
-    solver2, f_xdot2 = _build_nlp_hard(model, params, u_target, scales)
+    solver2, f_xdot2 = _build_nlp_hard(model, params, u_target, scales, pos_d_ref)
 
     # Default Phase 2 outputs (used if Phase 2 throws)
     z_final = z1_opt
@@ -713,6 +812,13 @@ def find_casadi_trim(
     diagnostics = _extract_diagnostics(
         z_final, xdot_final, lbz, ubz, u_target, lam_x_final
     )
+    # Ventilation margin at trim (leeward tip depth + depth factor) so every
+    # trim/sweep result self-annotates distance to the ventilation cliff.
+    tip_depth, depth_factor = compute_ventilation_margin(
+        params, z_final[:5], heel_angle
+    )
+    diagnostics["leeward_tip_depth"] = tip_depth
+    diagnostics["depth_factor"] = depth_factor
     warns = _sanity_check(z_final, lbz, ubz, u_target)
 
     return CasadiTrimResult(
@@ -934,6 +1040,7 @@ def calibrate_moth_thrust(
     target_u: float,
     heel_angle: float = np.deg2rad(30.0),
     z0: np.ndarray | None = None,
+    target_pos_d: float | None = DEFAULT_POS_D_REF,
     **kwargs,
 ) -> CalibrationTrimResult:
     """Calibrate sail thrust at a single speed.
@@ -941,18 +1048,31 @@ def calibrate_moth_thrust(
     Since CasADi always solves for thrust as a free variable, this just
     validates and wraps the trim result.
 
+    The solve is pinned at ``target_pos_d`` (default ``DEFAULT_POS_D_REF``):
+    the calibrated thrust is "the thrust that makes the ride-height reference
+    an equilibrium at this speed". A pinned solve has no pos_d null space, so
+    it stays on the primary trim branch by construction — the free
+    (regularized) solve is branch-ambiguous above ~18 m/s, where cold starts
+    can land on a nose-down secondary branch with 17-29% lower thrust.
+    Pass ``target_pos_d=None`` for the legacy free-ride-height calibration.
+
     Args:
         params: Moth parameters.
         target_u: Target forward speed (m/s).
         heel_angle: Static heel angle (rad).
         z0: Initial guess for decision variables (8-vector). Passed to
             find_casadi_trim for warm-starting from a previous solution.
+        target_pos_d: Ride height to pin the solve at (m). Default
+            ``DEFAULT_POS_D_REF``; ``None`` leaves pos_d free (regularized).
         **kwargs: Additional args passed to find_casadi_trim.
 
     Returns:
         CalibrationTrimResult with speed, thrust, trim result, and warnings.
     """
-    result = find_casadi_trim(params, target_u, heel_angle=heel_angle, z0=z0, **kwargs)
+    result = find_casadi_trim(
+        params, target_u, heel_angle=heel_angle, z0=z0,
+        target_pos_d=target_pos_d, **kwargs,
+    )
     warns = validate_trim_result(result, target_u)
 
     return CalibrationTrimResult(

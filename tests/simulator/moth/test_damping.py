@@ -4,13 +4,13 @@ Validates the linearized dynamics eigenvalue structure and damping
 behavior after the foil force decomposition fix (alpha_geo/alpha_eff).
 
 Eigenvalue structure at trim with surge_enabled=True (per-speed Moth3D, free theta):
-- 2 fast stable real eigenvalues (Re ~ -23 to -43)
-- 1 stable real (heave mode, Re ~ -0.4 to -0.6)
-- 1 stable real (surge mode, Re ~ -0.3, from drag/gravity coupling)
-- 1 unstable real (pitch divergence, Re ~ +0.45 to +0.55)
+- 2 fast stable real eigenvalues (Re ~ -34 to -40)
+- 1 stable real (heave mode)
+- 1 stable real (surge mode, from drag/gravity coupling)
+- 1 unstable real (pitch divergence)
 
-Max positive eigenvalue increases monotonically with speed:
-  10 m/s: +0.45, 12 m/s: +0.54
+Max positive eigenvalue increases monotonically with speed (post-C1.F FSL values,
+see EIGENVALUE_REFERENCE below): 10 m/s: +0.354, 12 m/s: +0.497.
 """
 
 import pytest
@@ -29,9 +29,13 @@ from fmd.simulator.linearize import linearize
 # Updated: NED→body sail thrust rotation, surge dynamics enabled
 # Reference values computed with CasADi trim solver
 # 8 m/s excluded: CasADi convergence issue with NED sail thrust
+# Reference values re-measured after the C1.F free-surface lift correction
+# (sigma(h/c)): FSL adds real heave stiffness at trim, which slows the
+# unstable pitch/heave divergence (max_real at 10 m/s: 0.482 -> 0.354).
+# Physically expected direction — do not revert without re-deriving.
 EIGENVALUE_REFERENCE = {
-    10.0: {"max_real": 0.482, "min_real": -34.88},
-    12.0: {"max_real": 0.601, "min_real": -40.89},
+    10.0: {"max_real": 0.354, "min_real": -34.52},
+    12.0: {"max_real": 0.497, "min_real": -40.48},
 }
 
 

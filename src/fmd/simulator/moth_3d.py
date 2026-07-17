@@ -57,6 +57,7 @@ from fmd.simulator.components.moth_forces import (
     MothStrutDrag,
     compute_foil_ned_depth,
     compute_depth_factor,
+    compute_free_surface_factor,
     create_moth_components,
 )
 
@@ -170,6 +171,8 @@ class StepTerms(NamedTuple):
     main_alpha_eff: Array
     rudder_alpha_geo: Array
     rudder_alpha_eff: Array
+    u_eff_main: Array
+    u_eff_rudder: Array
     main_lift_aero: Array
     main_drag_aero: Array
     rudder_lift_aero: Array
@@ -258,6 +261,8 @@ class Moth3D(JaxDynamicSystem):
 
     # Lift lag (Wagner-type first-order filter)
     enable_lift_lag: bool = eqx.field(static=True, default=False)
+    # Integrated encounter distance (x_n state for correct wave phase under varying speed)
+    enable_encounter_distance: bool = eqx.field(static=True, default=False)
     main_foil_chord: float = eqx.field(default=0.089)
     rudder_chord: float = eqx.field(default=0.075)
 
@@ -299,6 +304,9 @@ class Moth3D(JaxDynamicSystem):
         sailor_position_schedule: Optional[eqx.Module] = None,
         surge_enabled: bool = True,
         enable_lift_lag: bool = False,
+        enable_encounter_distance: bool = False,
+        ventilation_sharpness: float = 6.0,
+        enable_free_surface_lift: bool = True,
     ):
         """Initialize Moth 3DOF model from parameters.
 
@@ -321,9 +329,25 @@ class Moth3D(JaxDynamicSystem):
             enable_lift_lag: If True, add Wagner-type first-order lift lag
                 filter with 2 extra states (alpha_filt_main, alpha_filt_rudder).
                 State dimension becomes 7 instead of 5.
+            enable_encounter_distance: If True, carry an integrated encounter
+                distance x_n (appended as the last state) so wave phase is
+                queried at ∫u dt rather than u·t — correct under varying speed.
+                Default False (opt-in, like ``enable_lift_lag``): x_n has no
+                trim equilibrium (ẋ_n ≈ u > 0) and is uncontrollable, so it must
+                stay OUT of calm-water trim/LQR/EKF/MPC plants. Enable it only
+                for wave studies with a varying speed; at fixed speed u·t is
+                already exact. Note it is intentionally NOT coupled to
+                ``surge_enabled`` — surge is on by default, so coupling would
+                grow (and break trim on) nearly every model.
+            ventilation_sharpness: tanh gain of the ventilation cutoff
+                (default 6.0). Larger = steeper ventilation cliff.
+            enable_free_surface_lift: Apply the sigma(h/c) free-surface lift
+                correction on both foils (default True). Disable only for
+                before/after comparisons against the pre-FSL model.
         """
         self.surge_enabled = surge_enabled
         self.enable_lift_lag = enable_lift_lag
+        self.enable_encounter_distance = enable_encounter_distance
         # Read control bounds from params
         self.control_bounds = (
             (float(MAIN_FLAP_MIN), float(MAIN_FLAP_MAX)),
@@ -350,6 +374,8 @@ class Moth3D(JaxDynamicSystem):
             ventilation_mode=ventilation_mode,
             ventilation_threshold=ventilation_threshold,
             cg_offset=None,
+            ventilation_sharpness=ventilation_sharpness,
+            enable_free_surface_lift=enable_free_surface_lift,
         )
         self.main_foil = foil
         self.rudder = rudder
@@ -377,15 +403,30 @@ class Moth3D(JaxDynamicSystem):
 
         # State and aux names depend on lift lag
         if enable_lift_lag:
-            self.state_names = ("pos_d", "theta", "w", "q", "u", "alpha_filt_main", "alpha_filt_rudder")
+            state_names = ("pos_d", "theta", "w", "q", "u", "alpha_filt_main", "alpha_filt_rudder")
             self.aux_names = _MOTH_AUX_NAMES + ("main_alpha_filt", "rudder_alpha_filt", "main_lift_filtered", "rudder_lift_filtered")
         else:
-            self.state_names = ("pos_d", "theta", "w", "q", "u")
+            state_names = ("pos_d", "theta", "w", "q", "u")
             self.aux_names = _MOTH_AUX_NAMES
+        # Encounter distance x_n is appended last so base state indices are stable
+        if self.enable_encounter_distance:
+            state_names = state_names + ("x_n",)
+        self.state_names = state_names
 
     @property
     def num_states(self) -> int:
-        """Number of state variables (5 or 7 with lift lag)."""
+        """Number of state variables (5, +2 with lift lag, +1 with encounter distance)."""
+        n = 7 if self.enable_lift_lag else 5
+        return n + 1 if self.enable_encounter_distance else n
+
+    @property
+    def x_n_index(self) -> Optional[int]:
+        """State index of the integrated encounter distance x_n, or None if disabled.
+
+        x_n is appended last, after the optional lift-lag filter states.
+        """
+        if not self.enable_encounter_distance:
+            return None
         return 7 if self.enable_lift_lag else 5
 
     @property
@@ -409,12 +450,15 @@ class Moth3D(JaxDynamicSystem):
         Returns:
             Initial state [pos_d=-1.3, theta=0, w=0, q=0, u=u_forward(0)]
             With lift lag: appends [alpha_filt_main=0, alpha_filt_rudder=0]
+            With encounter distance: appends [x_n=0] as the last state.
             pos_d=-1.3 places hull bottom above water in the new geometry
             (hull_contact_depth ~0.94, so hull bottom at -1.3 + 0.94 = -0.36 < 0).
         """
         base = jnp.array([-1.3, 0.0, 0.0, 0.0, self.u_forward_schedule(0.0)])
         if self.enable_lift_lag:
-            return jnp.concatenate([base, jnp.zeros(2)])
+            base = jnp.concatenate([base, jnp.zeros(2)])
+        if self.enable_encounter_distance:
+            base = jnp.concatenate([base, jnp.zeros(1)])
         return base
 
     def default_control(self) -> Array:
@@ -494,9 +538,13 @@ class Moth3D(JaxDynamicSystem):
         sin_theta = jnp.sin(theta)
 
         if env is not None and env.wave_field is not None:
+            # Encounter-distance base coordinate: integrated ∫u dt (state x_n) when
+            # enabled, else the constant-speed approximation u·t (exact at fixed speed).
+            x_enc = state[self.x_n_index] if self.enable_encounter_distance else u_safe * t
+
             # Per-foil NED-north positions (body offset projected to NED)
-            x_main_ned = u_safe * t + eff_main_x * cos_theta + eff_main_z * sin_theta
-            x_rudder_ned = u_safe * t + eff_rudder_x * cos_theta + eff_rudder_z * sin_theta
+            x_main_ned = x_enc + eff_main_x * cos_theta + eff_main_z * sin_theta
+            x_rudder_ned = x_enc + eff_rudder_x * cos_theta + eff_rudder_z * sin_theta
 
             # Wave elevation at each foil
             eta_main = env.wave_field.elevation(x_main_ned, 0.0, t)
@@ -512,14 +560,14 @@ class Moth3D(JaxDynamicSystem):
             orb_main_ned = env.wave_field.orbital_velocity(x_main_ned, 0.0, main_foil_z_ned, t)
             orb_rudder_ned = env.wave_field.orbital_velocity(x_rudder_ned, 0.0, rudder_foil_z_ned, t)
 
-            # NED -> body frame rotation: Ry(theta)
-            # body_x =  ned_n * cos(theta) + ned_d * sin(theta)
-            # body_z = -ned_n * sin(theta) + ned_d * cos(theta)
-            u_orbital_body_main = orb_main_ned[0] * cos_theta + orb_main_ned[2] * sin_theta
-            w_orbital_body_main = -orb_main_ned[0] * sin_theta + orb_main_ned[2] * cos_theta
+            # NED -> body frame rotation: Ry(theta)^T (inverse of body->NED)
+            # body_x =  ned_n * cos(theta) - ned_d * sin(theta)
+            # body_z =  ned_n * sin(theta) + ned_d * cos(theta)
+            u_orbital_body_main = orb_main_ned[0] * cos_theta - orb_main_ned[2] * sin_theta
+            w_orbital_body_main = orb_main_ned[0] * sin_theta + orb_main_ned[2] * cos_theta
 
-            u_orbital_body_rudder = orb_rudder_ned[0] * cos_theta + orb_rudder_ned[2] * sin_theta
-            w_orbital_body_rudder = -orb_rudder_ned[0] * sin_theta + orb_rudder_ned[2] * cos_theta
+            u_orbital_body_rudder = orb_rudder_ned[0] * cos_theta - orb_rudder_ned[2] * sin_theta
+            w_orbital_body_rudder = orb_rudder_ned[0] * sin_theta + orb_rudder_ned[2] * cos_theta
         else:
             eta_main = 0.0
             eta_rudder = 0.0
@@ -589,38 +637,56 @@ class Moth3D(JaxDynamicSystem):
         main_df = compute_depth_factor(
             main_foil_depth, self.main_foil.foil_span,
             self.main_foil.heel_angle, self.main_foil.ventilation_threshold,
-            self.main_foil.ventilation_mode)
+            self.main_foil.ventilation_mode, self.main_foil.ventilation_sharpness)
         rudder_df = compute_depth_factor(
             rudder_foil_depth, self.rudder.foil_span,
             self.rudder.heel_angle, self.rudder.ventilation_threshold,
-            self.rudder.ventilation_mode)
+            self.rudder.ventilation_mode, self.rudder.ventilation_sharpness)
+
+        # Free-surface lift factors (mirror the component computation)
+        if self.main_foil.enable_free_surface_lift:
+            main_sigma = compute_free_surface_factor(
+                main_foil_depth, self.main_foil.chord,
+                self.main_foil.foil_span, self.main_foil.heel_angle)
+        else:
+            main_sigma = 1.0
+        if self.rudder.enable_free_surface_lift:
+            rudder_sigma = compute_free_surface_factor(
+                rudder_foil_depth, self.rudder.chord,
+                self.rudder.foil_span, self.rudder.heel_angle)
+        else:
+            rudder_sigma = 1.0
 
         # ------------------------------------------------------------------
         # Aux: AoA and aero coefficients (uses effective flow speed)
         # ------------------------------------------------------------------
-        u_eff_main = u_safe + u_orbital_body_main
-        u_eff_rudder = u_safe + u_orbital_body_rudder
+        # Flow speed relative to the water (v_rel = v_foil - v_water). Clamped like
+        # u_safe (matches moth_forces.py's component-level u_eff clamp) so steep,
+        # low-speed waves (orbital >~ u_safe) can't drive this through/near zero.
+        u_eff_main = jnp.maximum(u_safe - u_orbital_body_main, _MIN_FORWARD_SPEED)
+        u_eff_rudder = jnp.maximum(u_safe - u_orbital_body_rudder, _MIN_FORWARD_SPEED)
 
-        w_local_main = state[W] - state[Q] * eff_main_x + w_orbital_body_main
+        w_local_main = state[W] - state[Q] * eff_main_x - w_orbital_body_main
         main_alpha_geo = jnp.arctan2(w_local_main, u_eff_main)
         main_alpha_eff = self.main_foil.flap_effectiveness * control[MAIN_FLAP] + w_local_main / u_eff_main
 
-        w_local_rudder = state[W] - state[Q] * eff_rudder_x + w_orbital_body_rudder
+        w_local_rudder = state[W] - state[Q] * eff_rudder_x - w_orbital_body_rudder
         rudder_alpha_geo = jnp.arctan2(w_local_rudder, u_eff_rudder)
         rudder_alpha_eff = control[RUDDER_ELEVATOR] + w_local_rudder / u_eff_rudder
 
         q_dyn_main = 0.5 * self.rho_water * u_eff_main**2
         q_dyn_rudder = 0.5 * self.rho_water * u_eff_rudder**2
 
-        main_cl = (self.main_foil.cl0 + self.main_foil.cl_alpha * main_alpha_eff) * main_df
-        main_cd = (self.main_foil.cd0
-                   + main_cl**2 / (jnp.pi * self.main_foil.ar * self.main_foil.oswald)
+        main_cl = main_sigma * (self.main_foil.cl0 + self.main_foil.cl_alpha * main_alpha_eff) * main_df
+        main_cd = (self.main_foil.cd0 * main_df
+                   + main_cl**2 / (jnp.pi * self.main_foil.ar * self.main_foil.oswald * main_sigma)
                    + self.main_foil.cd_flap * control[MAIN_FLAP]**2)
         main_lift_aero = q_dyn_main * self.main_foil.area * main_cl
         main_drag_aero = q_dyn_main * self.main_foil.area * main_cd
 
-        rudder_cl = self.rudder.cl_alpha * rudder_alpha_eff * rudder_df
-        rudder_cd = self.rudder.cd0 + rudder_cl**2 / (jnp.pi * self.rudder.ar * self.rudder.oswald)
+        rudder_cl = rudder_sigma * self.rudder.cl_alpha * rudder_alpha_eff * rudder_df
+        rudder_cd = (self.rudder.cd0 * rudder_df
+                     + rudder_cl**2 / (jnp.pi * self.rudder.ar * self.rudder.oswald * rudder_sigma))
         rudder_lift_aero = q_dyn_rudder * self.rudder.area * rudder_cl
         rudder_drag_aero = q_dyn_rudder * self.rudder.area * rudder_cd
 
@@ -647,6 +713,8 @@ class Moth3D(JaxDynamicSystem):
             main_alpha_eff=main_alpha_eff,
             rudder_alpha_geo=rudder_alpha_geo,
             rudder_alpha_eff=rudder_alpha_eff,
+            u_eff_main=u_eff_main,
+            u_eff_rudder=u_eff_rudder,
             main_lift_aero=main_lift_aero,
             main_drag_aero=main_drag_aero,
             rudder_lift_aero=rudder_lift_aero,
@@ -698,6 +766,7 @@ class Moth3D(JaxDynamicSystem):
         )
 
         base_deriv = jnp.array([terms.pos_d_dot, theta_dot, w_dot, q_dot, u_dot])
+        deriv = base_deriv
 
         if self.enable_lift_lag:
             # Wagner-type first-order filter: d(alpha_filt)/dt = (alpha_inst - alpha_filt) / tau
@@ -716,9 +785,16 @@ class Moth3D(JaxDynamicSystem):
             d_alpha_main = (alpha_inst_main - alpha_filt_main) / tau_main
             d_alpha_rudder = (alpha_inst_rudder - alpha_filt_rudder) / tau_rudder
 
-            return jnp.concatenate([base_deriv, jnp.array([d_alpha_main, d_alpha_rudder])])
+            deriv = jnp.concatenate([deriv, jnp.array([d_alpha_main, d_alpha_rudder])])
 
-        return base_deriv
+        if self.enable_encounter_distance:
+            # ẋ_n = NED-north velocity of the CG = u·cosθ + w·sinθ (matches the
+            # offset projection eff_x·cosθ + eff_z·sinθ and pos_d_dot's frame).
+            # Uses u_fwd so it is correct whether or not surge is a dynamic state.
+            x_n_dot = terms.u_fwd * jnp.cos(state[THETA]) + state[W] * jnp.sin(state[THETA])
+            deriv = jnp.concatenate([deriv, jnp.array([x_n_dot])])
+
+        return deriv
 
     def compute_aux(self, state, control, t=0.0, env=None):
         """Compute auxiliary outputs for logging.
@@ -783,11 +859,11 @@ class Moth3D(JaxDynamicSystem):
             alpha_filt_rudder = state[6]
 
             main_cl_filt = (self.main_foil.cl0 + self.main_foil.cl_alpha * alpha_filt_main) * terms.main_df
-            main_lift_filtered = (0.5 * self.rho_water * (terms.u_safe + terms.wave_u_orbital_main) ** 2
+            main_lift_filtered = (0.5 * self.rho_water * terms.u_eff_main ** 2
                                   * self.main_foil.area * main_cl_filt)
 
             rudder_cl_filt = self.rudder.cl_alpha * alpha_filt_rudder * terms.rudder_df
-            rudder_lift_filtered = (0.5 * self.rho_water * (terms.u_safe + terms.wave_u_orbital_rudder) ** 2
+            rudder_lift_filtered = (0.5 * self.rho_water * terms.u_eff_rudder ** 2
                                     * self.rudder.area * rudder_cl_filt)
 
             aux = jnp.concatenate([aux, jnp.array([

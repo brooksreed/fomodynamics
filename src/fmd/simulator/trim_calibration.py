@@ -47,6 +47,7 @@ from typing import Iterable
 
 import numpy as np
 
+from fmd.simulator.provenance import provenance_stamp
 from fmd.simulator.trim_casadi import (
     CalibrationTrimResult,
     calibrate_moth_thrust,
@@ -60,6 +61,9 @@ from fmd.simulator.trim_report import (
     save_report,
 )
 from fmd.simulator.params.moth import MothParams
+
+
+_PROVENANCE_KEY = "_provenance"  # reserved seed-cache key; not a per-speed z0
 
 
 _Z_LEN = 8  # decision-variable length: [pos_d, theta, w, q, u, flap, elev, thrust]
@@ -169,6 +173,7 @@ def calibrate_moth_thrust_table(
         for speed, result in zip(speeds_list, results):
             if result.trim.success:
                 seeds[_seed_key(speed)] = _z0_from_result(result)
+        seeds[_PROVENANCE_KEY] = provenance_stamp(params)
         _save_seeds(seeds, seed_path)
         if verbose:
             print(f"Saved seeds to {seed_path}", flush=True)
@@ -191,12 +196,19 @@ def print_results(
         tr = r.trim
         status = "OK" if tr.success else "FAIL"
         warns = ", ".join(r.warnings) if r.warnings else "none"
+        tip = tr.diagnostics.get("leeward_tip_depth")
+        df = tr.diagnostics.get("depth_factor")
+        vent = (
+            f"tip={tip * 100:6.2f}cm, df={df:.3f}, "
+            if tip is not None and df is not None else ""
+        )
         print(
             f"  {speed:5.1f} m/s: thrust={r.thrust:7.1f} N, "
             f"theta={np.degrees(tr.state[1]):6.3f} deg, "
             f"pos_d={tr.state[0]:7.4f} m, "
             f"flap={np.degrees(tr.control[0]):6.3f} deg, "
             f"elev={np.degrees(tr.control[1]):6.3f} deg, "
+            f"{vent}"
             f"residual={tr.residual:.2e}, status={status}, warns=[{warns}]",
             flush=True,
         )
@@ -282,12 +294,16 @@ def save_csv(
                 "pos_d_m",
                 "flap_deg",
                 "elev_deg",
+                "leeward_tip_m",
+                "depth_factor",
                 "success",
                 "warnings",
             ]
         )
         for speed, r in zip(speeds, results):
             tr = r.trim
+            tip = tr.diagnostics.get("leeward_tip_depth")
+            df = tr.diagnostics.get("depth_factor")
             writer.writerow(
                 [
                     f"{speed:.1f}",
@@ -297,6 +313,8 @@ def save_csv(
                     f"{tr.state[0]:.4f}",
                     f"{np.degrees(tr.control[0]):.4f}",
                     f"{np.degrees(tr.control[1]):.4f}",
+                    f"{tip:.4f}" if tip is not None else "",
+                    f"{df:.4f}" if df is not None else "",
                     str(tr.success),
                     "; ".join(r.warnings) if r.warnings else "",
                 ]
@@ -381,6 +399,7 @@ def write_outputs(
         [float(s) for s in speeds],
         params_summary=params_summary,
     )
+    report.metadata = provenance_stamp(params)
     json_path, md_path = save_report(report, output_dir)
     print(f"Saved: {json_path}")
     print(f"Saved: {md_path}")

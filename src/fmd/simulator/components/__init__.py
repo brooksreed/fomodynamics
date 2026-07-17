@@ -35,12 +35,14 @@ from fmd.simulator.components.moth_forces import (
     compute_foil_ned_depth,
     compute_leeward_tip_depth,
     compute_tip_at_surface_pos_d,
+    compute_free_surface_factor,
 )
 from fmd.simulator.components.moth_wand import (
     WandLinkage,
     WandLinkageState,
     wand_angle_from_state,
     wand_angle_from_state_waves,
+    wand_world_angle_from_height,
     create_wand_linkage,
     gearing_ratio_from_rod,
 )
@@ -57,10 +59,12 @@ __all__ = [
     "compute_foil_ned_depth",
     "compute_leeward_tip_depth",
     "compute_tip_at_surface_pos_d",
+    "compute_free_surface_factor",
     "WandLinkage",
     "WandLinkageState",
     "wand_angle_from_state",
     "wand_angle_from_state_waves",
+    "wand_world_angle_from_height",
     "create_wand_linkage",
     "gearing_ratio_from_rod",
 ]

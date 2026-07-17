@@ -15,8 +15,13 @@ Kinematic chain:
     flap angle
 
 Conventions:
-    - Wand angle (theta_w): 0 = vertical (straight down), pi/2 = horizontal.
-      Increases as boat gets lower.
+    - Wand angle (theta_w): measured **relative to the hull** (hull-fixed
+      linkage), which is what mechanically drives the flap. At level pitch
+      (theta=0) this equals the angle from world-vertical: 0 = vertical
+      (straight down), pi/2 = horizontal, increasing as the boat gets lower.
+      At pitch theta the hull-relative angle is ``theta_w_world - theta``
+      (longitudinal plane; §4.6 hull-frame fix). Heel-frame coupling is not
+      modeled (longitudinal correction only).
     - Fastpoint: Peak gain angle (default 30 deg from vertical).
     - Flap angle: Positive = trailing edge down = more lift.
       Negative = trailing edge up = less lift.
@@ -153,32 +158,43 @@ def _safe_arcsin(x: Array) -> Array:
     return result
 
 
-def wand_angle_from_state(
+def wand_world_angle_from_height(h: Array, wand_length: float) -> Array:
+    """World-vertical wand angle for a pivot height above water.
+
+    The innermost geometric primitive: the angle between the wand and
+    *world*-vertical when the wand tip rests on the (flat) water surface a
+    height ``h`` below the pivot, ``arccos(h / L)``. Gradient-safe at the
+    domain boundaries via :func:`_safe_arccos`.
+
+    This is a pure geometric relation (no pitch, no hull frame); the
+    hull-relative mechanical angle subtracts pitch on top of it
+    (see :func:`wand_angle_from_state`). Exposed as the single canonical
+    source so callers that only have a pivot height (e.g. linkage
+    characterization plots) do not re-implement the ``arccos(h/L)`` geometry.
+
+    Args:
+        h: Pivot height above the water surface (m), positive = above.
+        wand_length: Physical wand length from pivot to float (m).
+
+    Returns:
+        World-vertical wand angle (rad). 0 = vertical, pi/2 = horizontal.
+    """
+    return _safe_arccos(h / wand_length)
+
+
+def _wand_world_angle_from_state(
     pos_d: Array,
     theta: Array,
     wand_pivot_position: Array,
-    wand_length: float = DEFAULT_WAND_LENGTH,
-    heel_angle: float = 0.0,
+    wand_length: float,
+    heel_angle: float,
 ) -> Array:
-    """Compute wand angle from Moth3D state variables.
+    """World-vertical wand angle from state (before the hull-frame correction).
 
-    Uses ``compute_foil_ned_depth`` to find the NED depth of the wand pivot,
-    then converts to wand angle via arccos geometry.
-
-    Uses :func:`_safe_arccos` to avoid NaN gradients at the clip
-    boundaries (ratio = 0 or 1), which can occur when the EKF estimated
-    state drifts to an extreme geometry. See ``_safe_arccos`` docstring.
-
-    Args:
-        pos_d: CG vertical position in NED (m), positive = deeper.
-        theta: Pitch angle (rad).
-        wand_pivot_position: Wand pivot [x, y, z] relative to CG (m),
-            body frame (FRD).
-        wand_length: Physical wand length from pivot to float (m).
-        heel_angle: Static heel angle (rad).
-
-    Returns:
-        Wand angle (rad). 0 = vertical, pi/2 = horizontal.
+    Internal helper: the pivot-height geometry solved against the flat water
+    surface. :func:`wand_angle_from_state` subtracts pitch to get the
+    hull-relative mechanical angle; the wave fixed-point iteration seeds and
+    solves in this world frame and applies the pitch correction once at the end.
     """
     pivot_x = wand_pivot_position[0]
     pivot_z = wand_pivot_position[2]
@@ -187,8 +203,54 @@ def wand_angle_from_state(
     pivot_depth = compute_foil_ned_depth(pos_d, pivot_x, pivot_z, theta, heel_angle)
     h = -pivot_depth  # height above water (positive = above)
 
-    ratio = h / wand_length
-    return _safe_arccos(ratio)
+    return wand_world_angle_from_height(h, wand_length)
+
+
+def wand_angle_from_state(
+    pos_d: Array,
+    theta: Array,
+    wand_pivot_position: Array,
+    wand_length: float = DEFAULT_WAND_LENGTH,
+    heel_angle: float = 0.0,
+) -> Array:
+    """Compute hull-relative (mechanical) wand angle from Moth3D state.
+
+    The wand pivots in a housing bolted to the hull, so the mechanical linkage
+    that drives the flap measures the wand angle **relative to the hull**, not
+    to world-vertical. In the longitudinal plane the two differ by exactly the
+    pitch angle (§4.6 hull-frame fix):
+
+        theta_w_hull = theta_w_world - theta
+
+    (theta > 0 = nose-up; nose-up tilts hull-down forward toward the wand's
+    forward lean, shrinking the relative angle.) Omitting this ``-theta`` term
+    deletes a real pitch-feedback path of the physical wand (flap error
+    ~ gain*theta); this function restores it.
+
+    The world-vertical geometry comes from :func:`_wand_world_angle_from_state`
+    via ``compute_foil_ned_depth`` and :func:`_safe_arccos` (gradient-safe at
+    the ratio = 0 or 1 boundaries, which the EKF can reach at extreme states).
+
+    Heel-frame coupling is not modeled (longitudinal correction only). Second-
+    order omissions (wand trailing aft under drag, tip skipping, wand inertia)
+    are likewise out of scope.
+
+    Args:
+        pos_d: CG vertical position in NED (m), positive = deeper.
+        theta: Pitch angle (rad), positive = nose-up.
+        wand_pivot_position: Wand pivot [x, y, z] relative to CG (m),
+            body frame (FRD).
+        wand_length: Physical wand length from pivot to float (m).
+        heel_angle: Static heel angle (rad).
+
+    Returns:
+        Hull-relative wand angle (rad). At theta=0: 0 = vertical, pi/2 =
+        horizontal.
+    """
+    theta_w_world = _wand_world_angle_from_state(
+        pos_d, theta, wand_pivot_position, wand_length, heel_angle
+    )
+    return theta_w_world - theta
 
 
 def wand_angle_from_state_waves(
@@ -201,8 +263,14 @@ def wand_angle_from_state_waves(
     wand_length: float,
     heel_angle: float = 0.0,
     n_iterations: int = 5,
+    encounter_distance: Optional[Array] = None,
 ) -> Array:
     """Compute wand angle with wave-aware fixed-point iteration.
+
+    Returns the hull-relative (mechanical) wand angle, matching
+    :func:`wand_angle_from_state`: the coupled surface geometry is solved in
+    the world frame and the ``-theta`` hull-frame correction (§4.6) is applied
+    once at the end.
 
     When ``wave_field is None``, delegates directly to
     :func:`wand_angle_from_state` (no iteration, guaranteed calm-water
@@ -210,7 +278,8 @@ def wand_angle_from_state_waves(
 
     When a wave field is provided, the wand tip contacts the wave surface
     at a position that depends on the wand angle itself. This creates a
-    coupled geometry problem solved via fixed-point iteration:
+    coupled geometry problem solved via fixed-point iteration (in the world
+    frame; ``theta_w`` below is the world-vertical angle):
 
     .. code-block:: text
 
@@ -237,9 +306,16 @@ def wand_angle_from_state_waves(
         n_iterations: Number of fixed-point iterations (default 5,
             validated by convergence study to achieve <1e-6 rad for all
             tested wave conditions including short steep waves).
+        encounter_distance: Optional integrated encounter distance (∫u dt, the
+            plant's ``x_n`` state) for the pivot's NED-north position. When
+            ``None`` (default) falls back to the constant-speed estimate
+            ``max(fwd_speed, 0.1)·t`` — exact only at fixed speed. Pass the
+            plant's ``x_n`` to keep the wand coordinate consistent with the
+            model's wave queries under varying speed (§4.1).
 
     Returns:
-        Wand angle (rad). 0 = vertical, pi/2 = horizontal.
+        Hull-relative wand angle (rad). At theta=0: 0 = vertical, pi/2 =
+        horizontal.
     """
     if wave_field is None:
         return wand_angle_from_state(
@@ -255,13 +331,16 @@ def wand_angle_from_state_waves(
     )
 
     # Pivot NED-north position (same pattern as moth_3d wave queries)
-    u_safe = jnp.maximum(fwd_speed, 0.1)
     cos_theta = jnp.cos(theta)
     sin_theta = jnp.sin(theta)
-    n_pivot = u_safe * t + pivot_x * cos_theta + pivot_z * sin_theta
+    if encounter_distance is None:
+        x_enc = jnp.maximum(fwd_speed, 0.1) * t
+    else:
+        x_enc = encounter_distance
+    n_pivot = x_enc + pivot_x * cos_theta + pivot_z * sin_theta
 
-    # Start from calm-water solution
-    theta_w_init = wand_angle_from_state(
+    # Start from calm-water solution (world frame, no hull-frame correction)
+    theta_w_init = _wand_world_angle_from_state(
         pos_d, theta, wand_pivot_position, wand_length, heel_angle
     )
 
@@ -275,8 +354,9 @@ def wand_angle_from_state_waves(
         # Use _safe_arccos for gradient-safe boundary handling
         return _safe_arccos(cos_val)
 
-    theta_w = jax.lax.fori_loop(0, n_iterations, iteration_body, theta_w_init)
-    return theta_w
+    theta_w_world = jax.lax.fori_loop(0, n_iterations, iteration_body, theta_w_init)
+    # Hull-frame correction (§4.6): mechanical angle = world angle - pitch
+    return theta_w_world - theta
 
 
 class WandLinkage(eqx.Module):

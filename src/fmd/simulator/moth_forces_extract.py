@@ -94,8 +94,10 @@ def extract_forces(moth: Moth3D, result: SimulationResult, env=None) -> MothForc
         eff_rudder_z = moth.rudder.position_z - cg_offset[2]
 
         if env is not None and env.wave_field is not None:
-            x_main_ned = u_safe * t + eff_main_x * cos_theta + eff_main_z * sin_theta
-            x_rudder_ned = u_safe * t + eff_rudder_x * cos_theta + eff_rudder_z * sin_theta
+            # Mirror the plant's encounter coordinate exactly (see moth_3d._compute_step_terms).
+            x_enc = state[moth.x_n_index] if moth.enable_encounter_distance else u_safe * t
+            x_main_ned = x_enc + eff_main_x * cos_theta + eff_main_z * sin_theta
+            x_rudder_ned = x_enc + eff_rudder_x * cos_theta + eff_rudder_z * sin_theta
 
             eta_main = env.wave_field.elevation(x_main_ned, 0.0, t)
             eta_rudder = env.wave_field.elevation(x_rudder_ned, 0.0, t)
@@ -108,10 +110,12 @@ def extract_forces(moth: Moth3D, result: SimulationResult, env=None) -> MothForc
             orb_main_ned = env.wave_field.orbital_velocity(x_main_ned, 0.0, main_foil_z_ned, t)
             orb_rudder_ned = env.wave_field.orbital_velocity(x_rudder_ned, 0.0, rudder_foil_z_ned, t)
 
-            u_orbital_body_main = orb_main_ned[0] * cos_theta + orb_main_ned[2] * sin_theta
-            w_orbital_body_main = -orb_main_ned[0] * sin_theta + orb_main_ned[2] * cos_theta
-            u_orbital_body_rudder = orb_rudder_ned[0] * cos_theta + orb_rudder_ned[2] * sin_theta
-            w_orbital_body_rudder = -orb_rudder_ned[0] * sin_theta + orb_rudder_ned[2] * cos_theta
+            # NED -> body frame rotation: Ry(theta)^T (inverse of body->NED),
+            # matching Moth3D._compute_step_terms (WAVE-AOA fix, C1.A).
+            u_orbital_body_main = orb_main_ned[0] * cos_theta - orb_main_ned[2] * sin_theta
+            w_orbital_body_main = orb_main_ned[0] * sin_theta + orb_main_ned[2] * cos_theta
+            u_orbital_body_rudder = orb_rudder_ned[0] * cos_theta - orb_rudder_ned[2] * sin_theta
+            w_orbital_body_rudder = orb_rudder_ned[0] * sin_theta + orb_rudder_ned[2] * cos_theta
         else:
             eta_main = 0.0
             eta_rudder = 0.0

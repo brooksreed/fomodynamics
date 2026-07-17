@@ -1,10 +1,11 @@
 """Tests for Moth 3DOF per-component force extraction."""
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from fmd.simulator import Moth3D, simulate
-from fmd.simulator.params import MOTH_BIEKER_V3
+from fmd.simulator import Environment, Moth3D, simulate
+from fmd.simulator.params import MOTH_BIEKER_V3, WaveParams
 from fmd.simulator.moth_forces_extract import extract_forces, MothForceLog
 
 
@@ -114,3 +115,53 @@ class TestExtractForces:
         np.testing.assert_allclose(forces.sail_force[:, 1], 0.0, atol=1e-12)
         np.testing.assert_allclose(forces.hull_drag_force[:, 1], 0.0, atol=1e-12)
         np.testing.assert_allclose(forces.gravity_force[:, 1], 0.0, atol=1e-12)
+
+
+class TestExtractForcesWaves:
+    """extract_forces recomputes wave-orbital body velocity independently of
+    Moth3D._compute_step_terms (mirror of the WAVE-AOA channel, C1.A). A sign
+    or clamp mismatch between the two would silently corrupt any post-hoc
+    force decomposition of a wave run without changing the plant's own
+    trajectory, so this must be checked against forward_dynamics directly
+    rather than via simulated-trajectory smoothness.
+    """
+
+    def test_forces_sum_matches_forward_dynamics_with_waves(self):
+        """Total extracted force must match forward_dynamics's own w_dot,
+        including the wave-orbital contribution, at low speed in a steep
+        wave (orbital velocity >~ u_safe, exercising the u_eff clamp too).
+        """
+        moth = Moth3D(MOTH_BIEKER_V3)
+        waves = WaveParams(
+            significant_wave_height=2.5, peak_period=4.0, spectrum_type="regular",
+        )
+        env = Environment.with_waves(waves)
+        state = jnp.array([-1.3, 0.0, 0.0, 0.0, 1.0])  # slow: u = 1 m/s
+        result = simulate(moth, state, dt=0.005, duration=1.0, env=env)
+        forces = extract_forces(moth, result, env=env)
+        states = np.asarray(result.states)
+
+        for i in [0, len(states) // 2, -1]:
+            s = jnp.array(states[i])
+            control = jnp.array(np.asarray(result.controls)[i])
+            t = float(np.asarray(result.times)[i])
+
+            deriv = moth.forward_dynamics(s, control, t, env=env)
+
+            total_fz = (
+                forces.main_foil_force[i, 2]
+                + forces.rudder_force[i, 2]
+                + forces.sail_force[i, 2]
+                + forces.hull_drag_force[i, 2]
+                + forces.gravity_force[i, 2]
+                + forces.strut_main_force[i, 2]
+                + forces.strut_rudder_force[i, 2]
+            )
+            m_eff = moth.total_mass + moth.added_mass_heave
+            u_fwd = float(s[4]) if moth.surge_enabled else moth.u_forward_schedule(t)
+            expected_w_dot = total_fz / m_eff + float(s[3]) * u_fwd
+            np.testing.assert_allclose(
+                float(deriv[2]), expected_w_dot, rtol=1e-6,
+                err_msg=f"w_dot mismatch at step {i} (wave-orbital sign/clamp drift "
+                        "between extract_forces and forward_dynamics)",
+            )

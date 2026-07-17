@@ -1123,18 +1123,28 @@ class TestMothComputeAux:
         assert jnp.all(jnp.isfinite(aux))
 
     def test_compute_aux_with_wave_env(self):
-        """Verify aux depth factors account for wave elevation."""
+        """Verify aux reflects wave forcing (elevation + orbital velocity).
+
+        The default state rides the foil deep (~0.3 m), where the ventilation
+        factor is saturated ~1 and correctly does not move for a small
+        elevation change, so this checks the channels that always respond to
+        waves: the queried elevation and the orbital-velocity contribution to
+        AoA. (Previously this asserted main_df differed, which only held
+        because the inverted ETA-DEPTH bug shallowed the foil under a crest.)
+        """
         from fmd.simulator.params import WAVE_REGULAR_1M
         from fmd.simulator import Environment
         moth = Moth3D(MOTH_BIEKER_V3)
         env = Environment.with_waves(WAVE_REGULAR_1M)
         state = moth.default_state()
         control = jnp.zeros(moth.num_controls)
-        # At t where wave elevation is nonzero, aux should differ from calm
+        names = moth.aux_names
         aux_calm = moth.compute_aux(state, control, t=0.0)
         aux_wave = moth.compute_aux(state, control, t=0.5, env=env)
-        # Depth factors should differ (wave changes effective depth)
-        assert aux_calm[0] != aux_wave[0]  # main_df differs
+        # Wave elevation entered the aux, and orbital velocity shifted the AoA.
+        assert aux_wave[names.index("wave_eta_main")] != 0.0
+        assert (aux_calm[names.index("main_alpha_geo")]
+                != aux_wave[names.index("main_alpha_geo")])
 
     def test_compute_aux_with_surge_enabled(self):
         """Verify aux works with surge dynamics enabled."""

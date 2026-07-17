@@ -299,16 +299,17 @@ and `f_sail[2] = F_sail * sin(theta)`.
 
 **AoA decomposition**:
 ```
-w_local = w - q * eff_pos_x + w_orbital
+w_local = w - q * eff_pos_x - w_orbital
 alpha_geo = arctan2(w_local, u_safe)        # geometric flow angle (for force rotation)
 alpha_eff = flap_effectiveness * main_flap + w_local / u_safe  # effective AoA (for polar)
 ```
 
 **Lift/drag coefficients** (no stall — CL is unbounded linear):
 ```
-cl = (cl0 + cl_alpha * alpha_eff) * depth_factor
-cd = cd0 + cl² / (π * ar * oswald)
+cl = sigma_fsl * (cl0 + cl_alpha * alpha_eff) * depth_factor
+cd = cd0 * depth_factor + cl² / (π * ar * oswald * sigma_fsl) + cd_flap * flap²
 ```
+`sigma_fsl` is the free-surface-lift correction (1.0 when disabled); it divides the induced-drag term and multiplies lift, same as `depth_factor` multiplying `cd0` — see `docs/moth_3dof_equations.md` §5.7.
 
 **Body-frame forces** (full rotation by alpha_geo):
 ```
@@ -317,26 +318,26 @@ fz = -drag * sin(alpha_geo) - lift * cos(alpha_geo)
 ```
 
 Surge force contributions:
-- **Profile drag**: `cd0 * q_dyn * area * cos(alpha_geo)` — speed-dependent, AoA-independent, **unaffected by ventilation**.
-- **Induced drag**: `CL²/(π·AR·e) * q_dyn * area * cos(alpha_geo)` — quadratic in CL, scales as `depth_factor²` under ventilation.
+- **Profile drag**: `cd0 * depth_factor * q_dyn * area * cos(alpha_geo)` — speed-dependent, AoA-independent, but **is** scaled by ventilation (`depth_factor`), unlike an earlier model version.
+- **Induced drag**: `CL²/(π·AR·e·sigma_fsl) * q_dyn * area * cos(alpha_geo)` — quadratic in CL, scales as `depth_factor²` under ventilation, and additionally grows as the foil nears the surface (`sigma_fsl` drops toward 0.5) via the free-surface lift correction.
 - **Lift-forward-tilt**: `+lift * sin(alpha_geo)` — forward component of lift at positive alpha_geo (thrust-producing during foiling).
 
-**Preset** (MOTH_BIEKER_V3): `cd0=0.006`, `cl_alpha=5.7`, `cl0=0.15`, `AR=10.7`, `e=0.85`, `area=0.08455 m²`.
+**Preset** (MOTH_BIEKER_V3): `cd0=0.006`, `cl_alpha=6.0`, `cl0=0.15`, `AR=10.7`, `e=0.85`, `area=0.08455 m²`.
 
 ### 2. Rudder elevator (`MothRudderElevator`, line 307)
 
 Same alpha_geo/alpha_eff decomposition as main foil:
 ```
-w_local = w - q * eff_pos_x + w_orbital
+w_local = w - q * eff_pos_x - w_orbital
 alpha_geo = arctan2(w_local, u_safe)
 alpha_eff = rudder_elevator_angle + w_local / u_safe
-rudder_cl = cl_alpha * alpha_eff * depth_factor
-rudder_cd = cd0 + rudder_cl² / (π * ar * oswald)
+rudder_cl = sigma_fsl * cl_alpha * alpha_eff * depth_factor
+rudder_cd = cd0 * depth_factor + rudder_cl² / (π * ar * oswald * sigma_fsl)
 rudder_fx = -rudder_drag * cos(alpha_geo) + rudder_lift * sin(alpha_geo)
 rudder_fz = -rudder_drag * sin(alpha_geo) - rudder_lift * cos(alpha_geo)
 ```
 
-**Preset**: `cd0=0.008`, `cl_alpha=5.0`, `AR=9.1`, `e=0.85`, `area=0.051 m²`.
+**Preset**: `cd0=0.008`, `cl_alpha=5.5`, `AR=9.1`, `e=0.85`, `area=0.051 m²`.
 
 ### 3. Sail thrust (`MothSailForce`, line 444)
 
@@ -385,7 +386,7 @@ Nose-down (θ < 0): small forward assist. Nose-up (θ > 0): opposes surge. This 
 
 ### Key insight: ventilation L/D collapse
 
-Ventilation reduces both CL and profile drag (`cd0`) by `depth_factor`. Induced drag scales as `depth_factor²`. At partial ventilation, lift drops much faster than total drag → severe L/D degradation. This, combined with induced drag blowup at high AoA, produces the "stall-like" behavior seen in surge simulations. **There is no actual stall model** — CL is unbounded linear.
+Ventilation reduces both CL and profile drag (`cd0`) by `depth_factor`. Induced drag scales as `depth_factor²`. At partial ventilation, lift drops much faster than total drag → severe L/D degradation. This, combined with induced drag blowup at high AoA, produces the "stall-like" behavior seen in surge simulations. **There is no actual stall model** — CL is unbounded linear. Independently, the free-surface lift correction (`sigma_fsl`, on by default) reduces CL and raises induced drag *gradually, pre-breach* as the foil nears the surface — a distinct, earlier-onset mechanism from the `depth_factor` breach/ventilation transition above (the two must not double-count; see `docs/moth_3dof_equations.md` §5.7).
 
 ### What's NOT modeled
 
@@ -436,7 +437,7 @@ Trace each control input through the force model to its final effect on lift and
 
 **Note on alpha_geo vs alpha_eff**: Control surface deflections only affect alpha_eff (and thus lift/drag magnitude). They do not change alpha_geo (the force rotation angle). This means flap/elevator adjust how much force the foil produces, but the direction of that force depends only on the geometric flow angle.
 
-**Warning — sign reversal at extreme negative elevator**: If the elevator goes far enough negative to flip the rudder's alpha_eff below zero (i.e., `theta + elevator < 0`), the rudder produces *downward* lift and a *nose-up* moment. This reverses the rudder's normal role in the moment balance — it opposes both weight support and pitch trim. If a trim result shows negative rudder alpha_eff, the solver has likely found a suboptimal local minimum. See `docs/trim_solver.md` § Known Limitations for how the continuation sweep can produce this at low speeds.
+**Warning — sign reversal at extreme negative elevator**: If the elevator goes far enough negative to flip the rudder's alpha_eff below zero (i.e., `theta + elevator < 0`), the rudder produces *downward* lift and a *nose-up* moment. This reverses the rudder's normal role in the moment balance — it opposes both weight support and pitch trim. If a trim result shows negative rudder alpha_eff, the solver has likely found a suboptimal local minimum. See `docs/trim_solver.md` § Known Limitations ("Multiple equilibria / local minima") for the diagnostic and how a suboptimal branch can arise per-speed.
 
 #### Pitch moment balance and rudder AoA vs speed
 

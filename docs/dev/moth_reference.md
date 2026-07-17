@@ -13,7 +13,7 @@ Moth-specific pitfalls, trim solver behavior, and timestep conventions.
 
 1. **Aux/Intermediate Extraction**: When extracting intermediates from a model for auxiliary logging, ensure ALL inputs (including environmental effects like waves) are replicated. It's easy to miss conditional inputs buried inside component methods.
 
-2. **SLSQP ill-conditioning**: SLSQP stalls at ~5 iterations when objective gradients are O(1e5), which happens with scale-aware objectives. Use L-BFGS-B as primary optimizer and SLSQP only for polish. The trim solver uses this two-phase approach.
+2. **(Historical, retired SciPy solver)** SLSQP ill-conditioning: SLSQP stalls at ~5 iterations when objective gradients are O(1e5), which happens with scale-aware objectives. This applied to the old SciPy-based trim solver (L-BFGS-B primary, SLSQP polish); the current trim solver (`fmd.simulator.trim_casadi`) uses CasADi/IPOPT with a different two-phase strategy (penalty phase → hard-constraint phase) — see `docs/trim_solver.md`.
 
 3. **JAX vs SciPy FD for small problems**: For optimization with ~4 decision variables, SciPy finite-difference gradients are faster than JAX eager-mode gradients (~2.5x). JAX overhead dominates at small problem sizes.
 
@@ -31,17 +31,17 @@ Moth-specific pitfalls, trim solver behavior, and timestep conventions.
 
 10. **Moth foiling envelope**: With current geometry (MOTH_BIEKER_V3), stable foiling range is ~8-18 m/s. 6 m/s is below takeoff (elevator saturates). 20 m/s diverges in open-loop. Trim thrust is monotonically increasing across the full 6-20 m/s range (post AoA decomposition fix).
 
-## Current Trim Values (MOTH_BIEKER_V3, 2026-03-13)
+## Current Trim Values (MOTH_BIEKER_V3, post physics-correctness batch, 2026-07-16)
 
-| Speed (m/s) | theta (°) | pos_d (m) | thrust (N) | RK4 margin |
-|-------------|-----------|-----------|------------|------------|
-| 8 | +1.80 | -1.446 | 54.1 | 19.2 |
-| 10 | +0.82 | -1.409 | 74.8 | 16.0 |
-| 12 | +0.28 | -1.427 | 99.3 | 13.6 |
-| 14 | -0.04 | -1.454 | 127.5 | 11.6 |
-| 16 | -0.24 | -1.465 | 161.9 | 10.2 |
+| Speed (m/s) | theta (°) | pos_d (m) | thrust (N) |
+|-------------|-----------|-----------|------------|
+| 8 | +1.836 | -1.400 | 56.3 |
+| 10 | +0.836 | -1.400 | 75.5 |
+| 12 | +0.297 | -1.400 | 102.1 |
+| 14 | -0.026 | -1.400 | 134.9 |
+| 16 | -0.225 | -1.398 | 173.8 |
 
-Trim theta decreases monotonically with speed (less nose-up). pos_d stays in -1.41 to -1.47m range (consistent foiling depth). Thrust is monotonically increasing.
+Trim theta decreases monotonically with speed (less nose-up). pos_d now stays essentially pinned at `DEFAULT_POS_D_REF` (-1.40m) — the C1.E trim-null regularization plus C1.G recalibration replaced the old free-solve pos_d spread (-1.41 to -1.47m). Thrust is monotonically increasing (RK4-margin column dropped: it went stale with the trim/timestep changes above and needs regeneration via `docs/timestep_guide.md`'s methodology, not hand-copied here).
 
 ## LQR Gain Schedule
 
@@ -63,7 +63,7 @@ When writing interpretation reports for Moth simulations:
 
 ## Trim Solver Behavior
 
-- Trim residuals are speed-dependent: < 0.01 at 12+ m/s, 0.01-0.08 at 8-10 m/s, > 0.1 at 6-7 m/s. Low-speed residuals are inherently higher due to less dynamic pressure and higher AoA requirements.
+- **(Historical, retired SciPy solver)** Trim residuals were speed-dependent: < 0.01 at 12+ m/s, 0.01-0.08 at 8-10 m/s, > 0.1 at 6-7 m/s, with low-speed residuals inherently higher due to less dynamic pressure and higher AoA requirements. The current CasADi/IPOPT solver's hard-constraint phase converges to `max(|xdot|) < 1e-8` at all 15 calibration speeds (6-20 m/s) — see `docs/trim_solver.md` "Typical Results".
 - At steady trim, body-frame flow AoA at the rudder is approximately `2*theta + elevator` (not `theta + elevator`) because `w = u*tan(theta) ~ u*theta` contributes an additional theta term.
 - Multistart should always include the default guess as one of the starts, not just alternative seeds.
 - The CG-to-main-foil offset is the critical geometry variable for pitch balance. Current preset has 0.42m offset (hull_cg_from_bow=1.99, main_foil_from_bow=1.57).

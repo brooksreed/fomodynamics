@@ -71,7 +71,7 @@ def compute_foil_ned_depth(
     Applies the z-row of the rotation matrix R = Ry(theta) @ Rx(heel)
     to a body-frame point [x, 0, z] (y=0, centerline foil):
 
-        depth_ned = pos_d + z * cos(heel) * cos(theta) - x * sin(theta) - eta
+        depth_ned = pos_d + z * cos(heel) * cos(theta) - x * sin(theta) + eta
 
     This is the single source of truth for foil depth in the Moth 3DOF model.
     The viz geometry code (geometry.py compute_surface_waterline) uses the
@@ -83,7 +83,9 @@ def compute_foil_ned_depth(
         eff_pos_z: Foil z-position relative to system CG (m), FRD body frame.
         theta: Pitch angle (rad).
         heel_angle: Static heel angle (rad).
-        eta: Wave surface elevation at foil position (m). Default 0.
+        eta: Wave surface elevation at foil position (m), positive up. Default 0.
+            The local surface sits at NED depth ``-eta``, so a crest (eta > 0)
+            makes a submerged foil DEEPER: it enters depth as ``+ eta``.
 
     Returns:
         NED depth of foil center (m). Positive = submerged.
@@ -91,7 +93,7 @@ def compute_foil_ned_depth(
     return (pos_d
             + eff_pos_z * jnp.cos(heel_angle) * jnp.cos(theta)
             - eff_pos_x * jnp.sin(theta)
-            - eta)
+            + eta)
 
 
 def compute_leeward_tip_depth(
@@ -167,12 +169,63 @@ def compute_tip_at_surface_pos_d(
     return half_span_rise - depth_at_zero_pos_d
 
 
+def compute_free_surface_factor(
+    foil_depth: Array,
+    chord: float,
+    foil_span: float,
+    heel_angle: float,
+) -> Array:
+    """Free-surface lift correction sigma(h/c) via 3-point spanwise sampling.
+
+    A submerged foil approaching the free surface loses circulation to its
+    negative image (high-Froude free-surface boundary condition). The classic
+    2D infinite-Froude image-vortex result gives the lift-slope ratio
+
+        sigma(h/c) = (1 + 16*(h/c)^2) / (2 + 16*(h/c)^2)
+
+    with limits sigma -> 1 when deep and sigma = 0.5 at the surface. Depth is
+    clamped at zero (sigma = 0.5 for h <= 0): behavior at/after tip breach is
+    the ventilation model's job (compute_depth_factor), FSL only models the
+    gradual pre-breach circulation loss — the two must not double-count. The
+    clamp is C^1: d(sigma)/dh = 0 at h = 0.
+
+    On a heeled boat the outboard leeward sections run much shallower than the
+    foil center, so sigma is evaluated at 3 spanwise stations (the centers of
+    three equal span strips, y = -s/3, 0, +s/3) and averaged:
+
+        h_i = foil_depth - y_i * sin(heel_angle),  y_i in {-s/3, 0, +s/3}
+
+    (+y toward the raised leeward tip). At zero heel all stations coincide
+    and this degenerates exactly to the center-depth evaluation.
+
+    The chord-Froude number is Fn_c ~ 6-10 across the foiling envelope, so the
+    infinite-Froude limit is used with no Fn dependence.
+
+    Args:
+        foil_depth: NED depth of foil center (m), positive = submerged
+            (from compute_foil_ned_depth, includes pitch/heel/eta).
+        chord: Foil mean chord (m).
+        foil_span: Full foil span (m).
+        heel_angle: Static heel angle (rad), >= 0.
+
+    Returns:
+        sigma_eff: Scalar in [0.5, 1]. 1 = deep water, 0.5 = at surface.
+    """
+    stations = jnp.array([-1.0, 0.0, 1.0]) * (foil_span / 3.0)
+    station_depths = foil_depth - stations * jnp.sin(heel_angle)
+    h_over_c = jnp.maximum(station_depths, 0.0) / chord
+    hc2 = 16.0 * h_over_c**2
+    sigma = (1.0 + hc2) / (2.0 + hc2)
+    return jnp.mean(sigma)
+
+
 def compute_depth_factor(
     foil_depth: Array,
     foil_span: float,
     heel_angle: float,
     ventilation_threshold: float = 0.30,
     mode: str = "smooth",
+    ventilation_sharpness: float = 6.0,
 ) -> Array:
     """Compute depth factor for foil ventilation.
 
@@ -197,6 +250,8 @@ def compute_depth_factor(
         ventilation_threshold: Fraction of exposed span at which ventilation
             begins to reduce lift (default 0.30 = 30%).
         mode: "smooth" (default, differentiable) or "binary" (hard cutoff).
+        ventilation_sharpness: Gain of the tanh cutoff in normalized exposed
+            fraction (default 6.0). Larger = steeper ventilation cliff.
 
     Returns:
         depth_factor: Scalar in approximately [0, 1]. 1.0 = fully submerged,
@@ -229,7 +284,7 @@ def compute_depth_factor(
 
     # Normalize so ventilation_threshold maps to 0.5 transition point
     normalized = exposed / jnp.maximum(ventilation_threshold, eps)
-    return 0.5 * (1.0 - jnp.tanh((normalized - 0.5) * 6.0))
+    return 0.5 * (1.0 - jnp.tanh((normalized - 0.5) * ventilation_sharpness))
 
 
 class MothMainFoil(JaxForceElement):
@@ -257,9 +312,13 @@ class MothMainFoil(JaxForceElement):
         position_x: Foil x-position relative to hull CG (m), positive forward (FRD body frame)
         position_z: Foil z-position relative to hull CG (m), positive down (FRD body frame)
         foil_span: Full wingspan of T-foil (m)
+        chord: Foil mean chord (m), used by the free-surface lift correction
         heel_angle: Static heel angle (rad), >= 0
         ventilation_threshold: Exposed span fraction for ventilation onset
         ventilation_mode: "smooth" (default) or "binary"
+        ventilation_sharpness: tanh gain of the ventilation cutoff
+        enable_free_surface_lift: Apply sigma(h/c) free-surface correction
+            (compute_free_surface_factor) to circulatory lift and induced drag
     """
 
     rho: float
@@ -274,9 +333,12 @@ class MothMainFoil(JaxForceElement):
     position_x: float
     position_z: float
     foil_span: float
+    chord: float = eqx.field(default=0.09)
     heel_angle: float = eqx.field(default=0.0)
     ventilation_threshold: float = eqx.field(default=0.30)
     ventilation_mode: str = eqx.field(static=True, default="smooth")
+    ventilation_sharpness: float = eqx.field(default=6.0)
+    enable_free_surface_lift: bool = eqx.field(static=True, default=True)
 
     def compute(
         self,
@@ -334,14 +396,15 @@ class MothMainFoil(JaxForceElement):
 
         u_safe = jnp.maximum(u_forward, 0.1)
 
-        # Effective flow speed including horizontal orbital velocity
-        u_eff = jnp.maximum(u_safe + u_orbital_body, 0.1)
+        # Effective flow speed relative to the water: subtract the water's
+        # orbital velocity (v_rel = v_foil - v_water).
+        u_eff = jnp.maximum(u_safe - u_orbital_body, 0.1)
 
         # Local vertical flow and angle-of-attack separation
         # alpha_geo: geometric flow angle (for force rotation)
         # alpha_eff: effective AoA including control (for polar)
         q = state[Q]
-        w_local = w - q * eff_pos_x + w_orbital_body
+        w_local = w - q * eff_pos_x - w_orbital_body
         alpha_geo = jnp.arctan2(w_local, u_eff)
         alpha_eff_inst = self.flap_effectiveness * main_flap + w_local / u_eff
 
@@ -356,11 +419,20 @@ class MothMainFoil(JaxForceElement):
             self.heel_angle,
             self.ventilation_threshold,
             self.ventilation_mode,
+            self.ventilation_sharpness,
         )
 
+        # Free-surface lift correction: image effect reduces circulation
+        # (pre-breach, gradual) and raises induced drag per unit lift.
+        if self.enable_free_surface_lift:
+            sigma_eff = compute_free_surface_factor(
+                foil_depth, self.chord, self.foil_span, self.heel_angle)
+        else:
+            sigma_eff = 1.0
+
         # Lift and drag coefficients
-        cl = (self.cl0 + self.cl_alpha * alpha_for_cl) * depth_factor
-        cd = self.cd0 * depth_factor + cl**2 / (jnp.pi * self.ar * self.oswald)
+        cl = sigma_eff * (self.cl0 + self.cl_alpha * alpha_for_cl) * depth_factor
+        cd = self.cd0 * depth_factor + cl**2 / (jnp.pi * self.ar * self.oswald * sigma_eff)
         cd = cd + self.cd_flap * main_flap ** 2
 
         # Dynamic pressure using effective flow speed
@@ -412,9 +484,13 @@ class MothRudderElevator(JaxForceElement):
         position_x: Rudder x-position relative to hull CG (m), positive forward (FRD body frame)
         position_z: Rudder z-position relative to hull CG (m), positive down (FRD body frame)
         foil_span: Full wingspan of rudder T-foil (m)
+        chord: Rudder mean chord (m), used by the free-surface lift correction
         heel_angle: Static heel angle (rad), >= 0
         ventilation_threshold: Exposed span fraction for ventilation onset
         ventilation_mode: "smooth" (default) or "binary"
+        ventilation_sharpness: tanh gain of the ventilation cutoff
+        enable_free_surface_lift: Apply sigma(h/c) free-surface correction
+            (compute_free_surface_factor) to circulatory lift and induced drag
     """
 
     rho: float
@@ -426,9 +502,12 @@ class MothRudderElevator(JaxForceElement):
     position_x: float = eqx.field(default=0.0)
     position_z: float = eqx.field(default=0.0)
     foil_span: float = eqx.field(default=0.5)
+    chord: float = eqx.field(default=0.075)
     heel_angle: float = eqx.field(default=0.0)
     ventilation_threshold: float = eqx.field(default=0.30)
     ventilation_mode: str = eqx.field(static=True, default="smooth")
+    ventilation_sharpness: float = eqx.field(default=6.0)
+    enable_free_surface_lift: bool = eqx.field(static=True, default=True)
 
     def compute(
         self,
@@ -486,11 +565,12 @@ class MothRudderElevator(JaxForceElement):
 
         u_safe = jnp.maximum(u_forward, 0.1)
 
-        # Effective flow speed including horizontal orbital velocity
-        u_eff = jnp.maximum(u_safe + u_orbital_body, 0.1)
+        # Effective flow speed relative to the water: subtract the water's
+        # orbital velocity (v_rel = v_foil - v_water).
+        u_eff = jnp.maximum(u_safe - u_orbital_body, 0.1)
 
         # Local vertical flow and angle-of-attack separation
-        w_local = w - q * eff_pos_x + w_orbital_body
+        w_local = w - q * eff_pos_x - w_orbital_body
         alpha_geo = jnp.arctan2(w_local, u_eff)
         alpha_eff_inst = rudder_elevator_angle + w_local / u_eff
 
@@ -505,13 +585,21 @@ class MothRudderElevator(JaxForceElement):
             self.heel_angle,
             self.ventilation_threshold,
             self.ventilation_mode,
+            self.ventilation_sharpness,
         )
 
+        # Free-surface lift correction (same model as main foil)
+        if self.enable_free_surface_lift:
+            sigma_eff = compute_free_surface_factor(
+                foil_depth, self.chord, self.foil_span, self.heel_angle)
+        else:
+            sigma_eff = 1.0
+
         # Lift coefficient with depth factor
-        rudder_cl = self.cl_alpha * alpha_for_cl * depth_factor
+        rudder_cl = sigma_eff * self.cl_alpha * alpha_for_cl * depth_factor
 
         # Drag coefficient: parabolic polar (same as main foil)
-        rudder_cd = self.cd0 * depth_factor + rudder_cl**2 / (jnp.pi * self.ar * self.oswald)
+        rudder_cd = self.cd0 * depth_factor + rudder_cl**2 / (jnp.pi * self.ar * self.oswald * sigma_eff)
 
         # Dynamic pressure using effective flow speed
         q_dyn = 0.5 * self.rho * u_eff**2
@@ -931,6 +1019,8 @@ def create_moth_components(
     ventilation_mode: str = "smooth",
     ventilation_threshold: float = 0.30,
     cg_offset: Optional[np.ndarray] = None,
+    ventilation_sharpness: float = 6.0,
+    enable_free_surface_lift: bool = True,
 ) -> tuple[MothMainFoil, MothRudderElevator, MothSailForce, MothHullDrag,
            MothStrutDrag, MothStrutDrag]:
     """Create all Moth force components from MothParams.
@@ -947,6 +1037,9 @@ def create_moth_components(
         cg_offset: System CG offset from hull CG [x, y, z]. When provided,
             all component positions are adjusted so they are relative to
             the system CG rather than the hull CG.
+        ventilation_sharpness: tanh gain of the ventilation cutoff.
+        enable_free_surface_lift: Apply the sigma(h/c) free-surface lift
+            correction on both foils (default True).
 
     Returns:
         Tuple of (main_foil, rudder, sail, hull_drag, main_strut, rudder_strut).
@@ -974,9 +1067,12 @@ def create_moth_components(
         position_x=float(foil_pos[0]),
         position_z=float(foil_pos[2]),
         foil_span=params.main_foil_span,
+        chord=params.main_foil_chord,
         heel_angle=heel_angle,
         ventilation_threshold=ventilation_threshold,
         ventilation_mode=ventilation_mode,
+        ventilation_sharpness=ventilation_sharpness,
+        enable_free_surface_lift=enable_free_surface_lift,
     )
 
     rudder = MothRudderElevator(
@@ -989,9 +1085,12 @@ def create_moth_components(
         position_x=float(rudder_pos[0]),
         position_z=float(rudder_pos[2]),
         foil_span=params.rudder_span,
+        chord=params.rudder_chord,
         heel_angle=heel_angle,
         ventilation_threshold=ventilation_threshold,
         ventilation_mode=ventilation_mode,
+        ventilation_sharpness=ventilation_sharpness,
+        enable_free_surface_lift=enable_free_surface_lift,
     )
 
     # Build lookup table arrays (empty arrays if no table configured)

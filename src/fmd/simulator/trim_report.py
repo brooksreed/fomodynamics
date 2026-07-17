@@ -135,6 +135,12 @@ def render_markdown(report: TrimSweepReport) -> str:
     lines.append(f"- **Timestamp**: {report.timestamp}")
     if report.params_summary:
         lines.append(f"- **Params**: {report.params_summary}")
+    if report.metadata.get("fmd_commit"):
+        lines.append(
+            f"- **fmd provenance**: commit `{report.metadata['fmd_commit'][:12]}` "
+            f"({report.metadata.get('fmd_install_mode', 'unknown')} install), "
+            f"params hash `{report.metadata.get('params_hash', 'unknown')}`"
+        )
     speed_range = f"{min(report.speeds):.0f}–{max(report.speeds):.0f} m/s"
     lines.append(f"- **Speed range**: {speed_range}")
     lines.append(f"- **Success rate**: {n_success}/{n_total}")

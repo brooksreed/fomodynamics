@@ -17,6 +17,7 @@ Example:
 
 from __future__ import annotations
 
+from typing import Optional
 
 import equinox as eqx
 import jax
@@ -93,6 +94,11 @@ class WandSensor(eqx.Module):
         fwd_speed_func: Schedule eqx.Module with __call__(t) -> forward
             speed (m/s), used for N_pivot computation in wave-aware mode.
             Default: ConstantSchedule(10.0).
+        encounter_distance_index: Optional state index of the plant's
+            integrated encounter distance x_n. When set, the wand pivot's
+            NED-north position is read from the true state (consistent with the
+            plant's wave queries under varying speed) instead of the
+            constant-speed estimate fwd_speed_func(t)·t. Default None.
     """
 
     wand_pivot_position: Array
@@ -102,6 +108,7 @@ class WandSensor(eqx.Module):
     n_iterations: int = eqx.field(static=True, default=5)
     include_speed_pitch: bool = eqx.field(static=True, default=False)
     fwd_speed_func: ConstantSchedule = ConstantSchedule(10.0)
+    encounter_distance_index: Optional[int] = eqx.field(static=True, default=None)
 
     def sense(
         self, x_true: Array, t: float, env, sensor_state, key: Array
@@ -121,10 +128,16 @@ class WandSensor(eqx.Module):
         key, subkey = jax.random.split(key)
 
         wave_field = env.wave_field if env is not None else None
+        encounter_distance = (
+            x_true[self.encounter_distance_index]
+            if self.encounter_distance_index is not None
+            else None
+        )
         wand_angle = wand_angle_from_state_waves(
             x_true[_POS_D], x_true[_THETA], self.fwd_speed_func(t), t,
             wave_field, self.wand_pivot_position, self.wand_length,
             self.heel_angle, self.n_iterations,
+            encounter_distance=encounter_distance,
         )
 
         if self.include_speed_pitch:

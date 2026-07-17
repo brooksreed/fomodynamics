@@ -12,6 +12,7 @@ from fmd.simulator.trim_calibration import (
     _Z_LEN,
     _seed_key,
     calibrate_moth_thrust_table,
+    write_outputs,
 )
 
 
@@ -50,20 +51,47 @@ def test_seed_round_trip(tmp_path):
     assert key in seeds
     assert len(seeds[key]) == _Z_LEN
 
+    # Provenance stamp (C1.H / gap 22): every save records fmd commit + install
+    # mode + params hash so a warm-started sweep can be traced to the fmd
+    # vintage that produced its seeds.
+    assert "_provenance" in seeds
+    assert set(seeds["_provenance"].keys()) == {
+        "fmd_commit", "fmd_install_mode", "params_hash",
+    }
+
     warm = calibrate_moth_thrust_table(
         MOTH_BIEKER_V3, speeds, seed_path=seed_path, verbose=False
     )
     assert warm[0].trim.success
 
-    # Warm-start should land on a nearby trim. The seed system speeds up
-    # convergence; it does not guarantee bit-reproducibility — IPOPT is
-    # path-dependent in the residual null-space, so a few % of drift is
-    # acceptable as long as both solutions are valid trims.
+    # With the pos_d regularization closing the trim null space (TRIM-NULL / C1.E),
+    # cold and warm starts select the same branch, so warm-vs-cold drift is now
+    # tiny (~0.02% observed). Assert within 1% — the historical 5% tolerance
+    # institutionalized the branch ambiguity and is no longer needed.
     rel_err = abs(warm[0].thrust - cold[0].thrust) / abs(cold[0].thrust)
-    assert rel_err < 0.05, (
-        f"Warm-started thrust drifted >5% from cold: cold={cold[0].thrust:.3f} N, "
+    assert rel_err < 0.01, (
+        f"Warm-started thrust drifted >1% from cold: cold={cold[0].thrust:.3f} N, "
         f"warm={warm[0].thrust:.3f} N (rel_err={rel_err:.2%})"
     )
+
+
+def test_write_outputs_stamps_report_metadata(tmp_path):
+    """write_outputs' TrimSweepReport carries the C1.H provenance stamp."""
+    speeds = [10.0]
+    results = calibrate_moth_thrust_table(
+        MOTH_BIEKER_V3, speeds, seed_path=None, verbose=False
+    )
+    report = write_outputs(
+        speeds, results, tmp_path,
+        params=MOTH_BIEKER_V3, params_summary="MOTH_BIEKER_V3, heel=30°",
+    )
+    assert set(report.metadata.keys()) == {
+        "fmd_commit", "fmd_install_mode", "params_hash",
+    }
+
+    with (tmp_path / "results.json").open() as f:
+        saved = json.load(f)
+    assert saved["metadata"] == report.metadata
 
 
 def test_save_seeds_disabled(tmp_path):

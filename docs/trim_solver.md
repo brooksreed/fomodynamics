@@ -4,7 +4,9 @@ Technical reference for the Moth 3DOF trim solver (`fmd.simulator.trim`).
 
 ## Overview
 
-The trim solver finds steady-state equilibrium points where all state derivatives are approximately zero. It uses SciPy optimization (L-BFGS-B primary + SLSQP polish) to minimize a scale-aware multi-term objective.
+The trim solver finds steady-state equilibrium points where all state derivatives are approximately zero. The current, canonical implementation (`find_moth_trim`, `calibrate_moth_thrust`, `calibrate_moth_thrust_table`, all in `fmd.simulator.trim_casadi`/`trim_calibration`) uses CasADi/IPOPT — see the [CasADi/IPOPT Trim Solver](#casadiipopt-trim-solver) section below for the current two-phase algorithm, weights, and API.
+
+> **Historical note:** the sections immediately below (through "Bounds and Variable Scaling") describe the **retired SciPy solver** (L-BFGS-B primary + SLSQP polish, `fmd.simulator.trim.find_trim`) that `find_moth_trim` used to wrap. `find_moth_trim` is now a drop-in CasADi replacement of the same name — SciPy-specific kwargs are accepted and silently ignored. These sections are kept for the objective-function design rationale (term roles, weight-sensitivity analysis), which broadly motivated the CasADi Phase 1 penalty design, but the concrete weight *values* and the "Optimizer Details" (SciPy L-BFGS-B/SLSQP) no longer reflect the current implementation. Two exceptions inside this block are current, not historical: "Typical Results" (the calibrated thrust curve, CasADi-sourced and dated 2026-07-16) and "Analytical xdot Correction" / "Analytical xdot Correction (Detailed)" (rewritten to describe the current exact CasADi formulation).
 
 Two modes:
 - **Default trim** (`find_moth_trim`): Find equilibrium at a given thrust. Used for simulation setup and control design.
@@ -96,33 +98,32 @@ Single-shot optimization with thrust as a free variable (6 DOFs: pos_d, theta, f
 
 ### Analytical xdot correction
 
-Thrust enters the EOM linearly. Rather than modifying the force model, the solver applies an analytical correction to the xdot output:
+Thrust enters the EOM through the sail force's NED-horizontal-to-body-frame rotation (`F_bx = thrust*cos(theta)`, `F_bz = thrust*sin(theta)`), so it is not simply additive in body-x. Rather than modifying the force model, the CasADi solver (`trim_casadi._build_xdot_expr`) builds the base `xdot` from a **zero-thrust** model and adds the full thrust contribution symbolically:
 
 ```python
-thrust_delta = thrust_total - baked_thrust
-xdot[U] += thrust_delta / m_eff_surge      # surge acceleration
-xdot[Q] += ce_z * thrust_delta / i_eff     # pitch acceleration (moment arm)
+f_bx = thrust * cos(theta)
+f_bz = thrust * sin(theta)
+xdot[W] += f_bz / m_eff_heave                            # heave acceleration
+xdot[Q] += (ce_z * f_bx - ce_x * f_bz) / i_eff            # pitch acceleration (full moment arm)
+xdot[U] += f_bx / m_eff_surge                             # surge acceleration
 ```
 
-This is exact at the trim point where q = 0 (no Coriolis interaction). The correction only affects u_dot and q_dot because thrust is body-x only, with a pitch moment from the CE height offset.
+This is exact at all pitch angles (no small-angle approximation, no delta-from-baked-thrust) since it is built from a zero-thrust baseline rather than perturbing an existing nonzero-thrust solution. Note it touches **three** states — `w_dot`, `q_dot`, and `u_dot` — not just surge and pitch: thrust has a body-z component whenever theta != 0, so it also contributes to heave.
 
 ### Model parameters
 
 | Parameter | Expression | Source |
 |-----------|-----------|--------|
-| m_eff_surge | total_mass + added_mass_surge | forward_dynamics line 530 |
-| i_eff | composite_iyy + added_inertia_pitch | forward_dynamics line 531 |
-| ce_z | sail.ce_position_z - cg_offset[2] | moth_forces line 519 |
-| baked_thrust | sail.thrust_coeff | moth_forces line 527 (constant path) |
+| m_eff_surge | total_mass + added_mass_surge | `Moth3DCasadiExact` |
+| m_eff_heave | total_mass + added_mass_heave | `Moth3DCasadiExact` |
+| i_eff | iyy + added_inertia_pitch | `Moth3DCasadiExact` |
+| ce_x, ce_z | sail_ce_position - cg_offset | `Moth3DCasadiExact` |
+
+The base `xdot` is built from a **zero-thrust** model (`sail_thrust_coeff=1e-10`, no lookup table — see `_zero_thrust_model`), not a "baked" nonzero thrust, so there is no delta/perturbation term to track — the full thrust force/moment is added directly (see `_build_xdot_expr` above).
 
 ### Post-solve validation
 
-After calibration, force balance is checked via `compute_aux`:
-```
-total_fx_corrected = total_fx_from_model + (calibrated_thrust - baked_thrust)
-```
-
-The `total_fx_residual` on `CalibrationTrimResult` reflects this corrected balance.
+Because `_build_xdot_expr` is exact (not a linearized correction), post-solve force balance is just `max_xdot_residual` on `CalibrationTrimResult` — the max absolute value of the full 5-state `xdot` (including the thrust contribution) at the solution. No separate "corrected" residual bookkeeping is needed.
 
 ## Optimizer Details
 
@@ -141,36 +142,41 @@ When state targets are pinned (`target_theta` and/or `target_pos_d`), the proble
 
 ## Typical Results
 
-### Calibrated thrust curve (MOTH_BIEKER_V3 preset, post AoA fix + measured geometry)
+### Calibrated thrust curve (MOTH_BIEKER_V3 preset, physics-correctness batch)
 
-> **Snapshot**: 2026-03-13, branch `feature/foil-force-decomposition-fix`.
-> Geometry: hull_cg_from_bow=1.99, main_foil_from_bow=1.57, strut_depth=1.03, main_foil_cl0=0.15. AoA decomposition fix applied (alpha_geo/alpha_eff). Calibrated at 30 deg heel with `surge_enabled=True`.
+> **Snapshot**: 2026-07-16, branch `physics-correctness` (post
+> WAVE-AOA/ETA-DEPTH/QUAT/TRIM-NULL/FSL fixes; free-surface lift on).
+> Calibrated with the CasADi/IPOPT two-phase solver, **pinned at
+> pos_d = DEFAULT_POS_D_REF (-1.40 m)**, 30 deg heel, cold start (no seeds).
+> The pinned solve stays on the primary trim branch by construction — the
+> free (regularized) solve is branch-ambiguous above ~18 m/s, where cold
+> starts can land on a nose-down secondary branch with 17-29% lower thrust.
 
 | Speed (m/s) | Thrust (N) |
 |-------------|------------|
-| 6.0 | 52.3 |
-| 7.0 | 54.8 |
-| 8.0 | 61.3 |
-| 9.0 | 70.6 |
-| 10.0 | 82.4 |
-| 11.0 | 96.2 |
-| 12.0 | 111.8 |
-| 13.0 | 129.2 |
-| 14.0 | 148.3 |
-| 15.0 | 168.9 |
-| 16.0 | 191.1 |
-| 17.0 | 214.7 |
-| 18.0 | 239.8 |
-| 19.0 | 266.3 |
-| 20.0 | 294.2 |
+| 6.0 | 47.6 |
+| 7.0 | 50.3 |
+| 8.0 | 56.3 |
+| 9.0 | 64.9 |
+| 10.0 | 75.5 |
+| 11.0 | 87.9 |
+| 12.0 | 102.0 |
+| 13.0 | 117.7 |
+| 14.0 | 134.8 |
+| 15.0 | 153.4 |
+| 16.0 | 173.4 |
+| 17.0 | 194.9 |
+| 18.0 | 217.6 |
+| 19.0 | 241.8 |
+| 20.0 | 267.3 |
 
 **Observations:**
 
 - Thrust is monotonically increasing across the full 6-20 m/s range, approximately following a u^2 drag law.
-- The AoA decomposition fix eliminated the non-monotonic low-speed behavior (old table had 235, 155, 124, 111, 108 N at 6-10 m/s). The old model had artificial drag from lift-into-surge leakage via the conflated AoA, which inflated low-speed thrust requirements.
-- Thrust minimum at 6 m/s (52.3 N). Low-speed values are dramatically lower than the pre-fix model (~52 vs ~235 N at 6 m/s).
-- Pitch angle decreases monotonically with speed (alpha proportional to 1/u^2), as expected.
-- Residuals < 0.02 at 8+ m/s; 6-7 m/s are at the foiling envelope edge with higher residuals.
+- Pitch decreases smoothly from +4.0 deg (6 m/s, nose-up for lift at low dynamic pressure) through zero near 14 m/s to -0.49 deg at 20 m/s; flap and elevator stay within +/-0.5 deg across the band.
+- Leeward tip depth at trim grows from +2.2 cm (6 m/s, the binding ventilation-margin case) to +7.4 cm (20 m/s); depth_factor 0.998 everywhere.
+- All 15 speeds converge with residuals < 1e-8 (hard-constraint phase).
+- Historical note: the pre-AoA-fix model was non-monotonic at low speed (235, 155, 124, 111, 108 N at 6-10 m/s) from lift-into-surge leakage via a conflated AoA; that was fixed in 2026-03.
 
 **Open-loop stability:** The system has a positive real eigenvalue at all speeds (~+0.33 to +0.58 rad/s), with instability increasing with speed. Time constants of 1.7-3.0 s are physically reasonable for an open-loop unstable foiling boat. See `tests/simulator/moth/test_damping.py` for current reference eigenvalues.
 
@@ -449,42 +455,38 @@ See `docs/plans/casadi_trim_infeasibility_fix_20260313/` for the full analysis.
 
 2. **Fixed heel angle**: All trim modes use a fixed heel angle (default 30°). The lateral force balance is not solved — heel is assumed constant.
 
-3. **Analytical correction exact only at q=0**: The thrust xdot correction is exact at the trim point (q=0 constraint) but approximate during intermediate optimization steps where q may be slightly nonzero.
+3. **Analytical correction exact everywhere**: The CasADi thrust xdot correction (`_build_xdot_expr`) is built from a zero-thrust baseline plus the full thrust force/moment, so it is exact at all pitch angles and all optimization iterates, not just at the q=0 trim point. (This superseded an earlier SciPy-era delta/small-angle correction that was only exact at q=0; historical text describing that limitation has been corrected — see "Analytical xdot Correction" above.)
 
 4. **Ventilation not modeled**: Foil ventilation (air entrainment at low immersion) is not modeled. At very low ride heights or high speeds where immersion is minimal, the simulation may be optimistic about foil performance.
 
 5. **Added mass at t=0**: Added mass terms use their full steady-state values from t=0. In reality, added mass develops over time as the flow field establishes.
 
-6. **SLSQP ill-conditioning**: SLSQP stalls at ~5 iterations when objective gradients are O(1e5). The two-phase approach (L-BFGS-B primary, SLSQP polish) mitigates this, but SLSQP may not improve on L-BFGS-B for all speed points.
+6. **(Historical, SciPy solver only)** SLSQP ill-conditioning: SLSQP stalls at ~5 iterations when objective gradients are O(1e5). This applied to the retired SciPy solver's two-phase approach (L-BFGS-B primary, SLSQP polish) and does not apply to the current CasADi/IPOPT solver.
 
 7. **Multiple equilibria / local minima**: The trim problem can have multiple solutions at a given speed. The regularization terms (theta, flap, elevator penalties) select among them by preferring small deflections, but this preference can lead the solver to a physically suboptimal equilibrium — particularly at low speeds where the physics demands larger deflections than the regularization rewards.
 
-8. **Continuation sweep can follow suboptimal branches**: The `calibrate_moth_thrust_table()` sweep uses each speed's solution as the initial guess for the next. This continuation is critical for convergence at high speeds but can bias the solver toward a branch that becomes suboptimal at other speeds. Specifically, the low-to-high sweep starts at 6 m/s with a cold start, and the solution found there (with extreme negative elevator) seeds 7 m/s, etc. The negative-elevator branch is smooth and the solver follows it, but a positive-elevator solution with lower residual may exist. **Diagnostic**: if a trim result shows negative rudder flow AoA (i.e., `2θ + elevator < 0`), the rudder is producing downward lift and nose-up moment — working against both weight support and pitch balance. This is a strong signal of a local minimum, not a physics-driven equilibrium. See `physical_intuition_guide.md` § "Control input → physical effect" for the sign chain.
+8. **(Historical)** Continuation sweep can follow suboptimal branches: an earlier `calibrate_moth_thrust_table()` used each speed's solution as the initial guess for the next (in-loop continuation), which could bias the solver toward a branch that becomes suboptimal at other speeds (e.g. a smooth negative-elevator branch dominating over a lower-residual positive-elevator solution). **This no longer applies**: the current implementation has no speed-to-speed propagation within a sweep (see "Continuation behaviour" above) — each speed solves independently, optionally warm-started only from the on-disk seed cache. The multi-solution risk from item 7 still exists per-speed; the diagnostic remains useful: if a trim result shows negative rudder flow AoA (i.e., `2θ + elevator < 0`), the rudder is producing downward lift and nose-up moment — working against both weight support and pitch balance, a strong signal of a local minimum rather than a physics-driven equilibrium. See `physical_intuition_guide.md` § "Control input → physical effect" for the sign chain. The C1.F/C1.G work found a related but distinct branch-ambiguity (a nose-down secondary trim branch at u>=18 m/s in the *free* pos_d solve, not an elevator-sign artifact); pinning pos_d at `DEFAULT_POS_D_REF` (see "Calibrated thrust curve" above) sidesteps it by construction.
 
 ## API Reference
+
+All of the below live in `fmd.simulator.trim_casadi` (`calibrate_moth_thrust_table` in `fmd.simulator.trim_calibration`). `find_moth_trim` is a drop-in replacement for the old SciPy API of the same name — it accepts and silently ignores SciPy-specific kwargs (`pos_d_guess`, `prev_trim`, etc.) so old call sites keep working.
 
 ### find_moth_trim
 
 ```python
 find_moth_trim(
-    moth: JaxDynamicSystem,
+    params: MothParams,
     u_forward: float = 10.0,
-    pos_d_guess: float = -0.25,
-    theta_guess: float = 0.02,
-    main_flap_guess: float = 0.03,
-    rudder_elevator_guess: float = 0.01,
-    tol: float = 1e-10,
-    target_theta: Optional[float] = None,
-    target_pos_d: Optional[float] = None,
-    regularization_weights: Optional[dict] = None,
-    u_bounds_margin: float = 0.5,
-    use_jax_grad: bool = False,
-    calibrate_thrust: bool = False,
-    thrust_guess: float = 70.0,
-) -> TrimResult
+    target_theta: float | None = None,
+    target_pos_d: float | None = None,
+    heel_angle: float | None = None,  # default 30 deg
+    z0: np.ndarray | None = None,
+    fixed_controls: dict[str, float] | None = None,
+    **kwargs,
+) -> CasadiTrimResult
 ```
 
-Primary trim-finding API. Returns `TrimResult` with optimized state, control, residual, and warnings. When `calibrate_thrust=True`, also populates `calibrated_thrust`.
+Primary trim-finding API — CasADi two-phase solver. Returns `CasadiTrimResult` with optimized state, control, thrust, residual, and warnings.
 
 ### calibrate_moth_thrust
 
@@ -492,18 +494,14 @@ Primary trim-finding API. Returns `TrimResult` with optimized state, control, re
 calibrate_moth_thrust(
     params: MothParams,
     target_u: float,
-    thrust_guess: float = 70.0,
-    heel_angle: float | None = None,  # default 30°
-    fx_tol: float = 1.0,
-    pos_d_guess: float = -0.25,
-    theta_guess: float = 0.02,
-    main_flap_guess: float = 0.03,
-    rudder_elevator_guess: float = 0.01,
-    tol: float = 1e-10,
+    heel_angle: float = np.deg2rad(30.0),
+    z0: np.ndarray | None = None,
+    target_pos_d: float | None = DEFAULT_POS_D_REF,
+    **kwargs,
 ) -> CalibrationTrimResult
 ```
 
-Single-speed calibration. Builds a Moth3D with `surge_enabled=True`, runs `find_moth_trim` with `calibrate_thrust=True`, and validates the force balance. Returns `CalibrationTrimResult`.
+Single-speed calibration. Since CasADi always solves for thrust as a free variable, this wraps `find_casadi_trim` and validates the result. Pinned at `target_pos_d` (default `DEFAULT_POS_D_REF`) by default — see "Calibrated thrust curve" above for why; pass `target_pos_d=None` for the legacy free-ride-height calibration.
 
 ### calibrate_moth_thrust_table
 
@@ -525,42 +523,42 @@ Sweeps `speeds`, calling `calibrate_moth_thrust` at each. With `seed_path`, load
 
 ```python
 validate_trim_result(
-    state: np.ndarray,
-    control: np.ndarray,
-    moth: JaxDynamicSystem,
-    u_forward: float,
-    total_fx_threshold: float = 1.0,
-    calibrated_thrust: Optional[float] = None,
+    result: CasadiTrimResult,
+    u_target: float,
 ) -> list[str]
 ```
 
-Post-solve plausibility checks: force balance (total_fx, total_my), state ranges (theta, pos_d), control saturation, and thrust-at-bounds. Returns list of warning strings (empty if all pass).
+Post-solve plausibility checks: pitch angle vs speed-dependent limit, pos_d range, thrust near bounds, and controls at bounds. Starts from `result.warnings` (solver-level warnings) and appends physical-plausibility warnings. Returns list of warning strings (empty if all pass).
 
 ### validate_thrust_sweep
 
 ```python
 validate_thrust_sweep(
-    speeds: np.ndarray,
-    thrusts: np.ndarray,
+    speeds: np.ndarray | tuple | list,
+    thrusts: np.ndarray | tuple | list,
     monotonic_tol: float = 2.0,
     jump_fraction: float = 0.5,
 ) -> list[str]
 ```
 
-Checks a thrust table for monotonicity (all adjacent pairs) and sharp jumps (>50% between adjacent speeds). Low-speed non-monotonicity (e.g., 6-7 m/s dip) is physical and expected. Returns list of warning strings.
+Checks a thrust table for monotonicity (all adjacent pairs) and sharp jumps (>50% between adjacent speeds). Returns list of warning strings.
 
-### TrimResult
+### CasadiTrimResult
 
 ```python
 @dataclass
-class TrimResult:
+class CasadiTrimResult:
     state: np.ndarray           # Trim state vector [pos_d, theta, w, q, u]
     control: np.ndarray         # Trim control [main_flap, rudder_elevator]
-    residual: float             # L2 norm of xdot at trim
-    success: bool               # Optimizer convergence flag
-    optimize_result: OptimizeResult  # Full scipy result
-    warnings: list[str]         # Plausibility warnings
-    calibrated_thrust: Optional[float]  # Only when calibrate_thrust=True
+    thrust: float
+    residual: float              # max(|xdot|) at solution
+    solve_time: float            # wall-clock seconds for entire solve
+    success: bool
+    iter_count: int = -1         # IPOPT iteration count
+    ipopt_stats: dict = ...
+    diagnostics: dict = ...      # includes leeward_tip_depth, depth_factor
+    warnings: list[str] = ...
+    phases: list[PhaseInfo] = ...  # per-phase (penalty/hard_constraint) stats
 ```
 
 ### CalibrationTrimResult
@@ -568,9 +566,9 @@ class TrimResult:
 ```python
 @dataclass
 class CalibrationTrimResult:
-    speed: float                # Forward speed (m/s)
-    thrust: float               # Calibrated thrust (N)
-    trim: TrimResult            # Full trim result
-    total_fx_residual: float    # Corrected force balance (N)
-    warnings: list[str]         # Combined warnings
+    speed: float                 # Forward speed (m/s)
+    thrust: float                # Calibrated thrust (N)
+    trim: CasadiTrimResult       # Full trim result
+    max_xdot_residual: float     # max(|xdot|) at the solution (N/rad/etc, per-state)
+    warnings: list[str]          # Combined warnings
 ```
