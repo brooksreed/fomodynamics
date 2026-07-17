@@ -42,6 +42,7 @@ import matplotlib.pyplot as plt
 from fmd.analysis.closed_loop import (
     compute_extended_metrics,
     compute_leeward_tip_depth,
+    compute_stationarity,
     plot_single_dashboard,
 )
 from fmd.simulator.closed_loop_pipeline import simulate_closed_loop
@@ -50,8 +51,10 @@ from fmd.simulator.integrator import SimulationResult, compute_aux_trajectory
 from fmd.simulator.moth_3d import ConstantSchedule, Moth3D
 from fmd.simulator.moth_lqr import design_moth_lqr
 from fmd.simulator.moth_scenarios import (
+    apply_speed_governor,
     create_mechanical_wand_config,
     create_pid_wand_config,
+    governor_thrust0,
 )
 from fmd.simulator.components.moth_forces import compute_tip_at_surface_pos_d
 from fmd.simulator.params import MOTH_BIEKER_V3
@@ -71,6 +74,17 @@ N_SEEDS_FULL = 50
 N_SEEDS_QUICK = 5
 SINGLE_SEED = 0
 STEADY_START = 10.0       # s — skip the first 10s for steady-state stats
+
+# --- P speed-governor ("sailor model"), C2.C0 -------------------------------
+# The calibrated thrust table is a required-thrust curve with zero surge
+# stiffness (the C2.B runaway). The dynamic thrust law is instead a P
+# governor F = T0 + Kp*(u_target - u), realised via MothSailForce's affine
+# mode (see apply_speed_governor / thrust_governor_design.md). Each
+# controller uses its own pinned-trim T0 at its ride-height setpoint; all
+# share one boatspeed target for an equal-speed comparison.
+U_TARGET = U_FORWARD      # m/s — common boatspeed target for all controllers
+KP_GOVERNOR = 40.0        # N/(m/s) — nominal gain (bandwidth separation:
+                          # pole Kp/m ~0.33 rad/s, ~20x below encounter ~6.5)
 
 # Deeper PID target: 30 cm below the foil-tip-at-surface depth, leaves a
 # realistic safety margin so the leeward foil tip stays comfortably
@@ -270,6 +284,57 @@ def _target_pos_d_for_kind(controller_kind: str, *, trim_state: np.ndarray) -> f
     raise ValueError(f"Unknown controller_kind: {controller_kind}")
 
 
+def _governor_thrust0_for_kind(controller_kind: str, *, lqr) -> float:
+    """Pinned-trim thrust T0 (N) at each controller's own ride-height setpoint.
+
+    Mirrors ``_target_pos_d_for_kind``. For the natural-trim controllers T0 is
+    read straight from the LQR design point (``lqr.trim.thrust`` — bit-
+    consistent, single-branch); only ``pid_deeper`` needs a fresh pinned
+    solve at its deeper setpoint. ΔT(t) = F_sail − T0 then isolates wave added
+    resistance, and the T0 differences between setpoints are the calm
+    drag-vs-ride-height decomposition (racing framing).
+    """
+    if controller_kind in ("mechanical", "pid_natural"):
+        return float(lqr.trim.thrust)
+    if controller_kind == "pid_deeper":
+        target_pos_d = float(compute_tip_at_surface_pos_d() + PID_DEEPER_MARGIN_M)
+        return governor_thrust0(
+            MOTH_BIEKER_V3, target_pos_d=target_pos_d,
+            u_target=U_TARGET, heel_angle=HEEL_ANGLE,
+        )
+    raise ValueError(f"Unknown controller_kind: {controller_kind}")
+
+
+def _build_plant(controller_kind: str, *, lqr, kp: float, captive: bool):
+    """Build the Moth3D plant for one controller.
+
+    Primary regime (``captive=False``): surge dynamic + P speed-governor sail
+    so the boat holds ``U_TARGET`` in waves (surge equilibrium — the C2.C0
+    fix). Captive regime (``captive=True``): ``surge_enabled=False``, a
+    towing-tank diagnostic that prescribes u and drops surge-wave coupling —
+    the calibrated table sail is left in place (no governor without live u).
+
+    Both build with ``enable_encounter_distance=True`` (ENC-DIST, C1.C) and
+    fail loud if that ever silently reverts (the C2.D landmine).
+    """
+    moth = Moth3D(
+        MOTH_BIEKER_V3,
+        u_forward=ConstantSchedule(U_FORWARD),
+        heel_angle=HEEL_ANGLE,
+        enable_encounter_distance=True,
+        surge_enabled=not captive,
+    )
+    if not moth.enable_encounter_distance:
+        raise ValueError(
+            "wand_vs_pid_waves requires enable_encounter_distance=True "
+            "(ENC-DIST, C1.C) — got False."
+        )
+    if captive:
+        return moth
+    t0 = _governor_thrust0_for_kind(controller_kind, lqr=lqr)
+    return apply_speed_governor(moth, thrust0=t0, kp=kp, u_target=U_TARGET)
+
+
 def _build_controller_for_kind(
     lqr, controller_kind: str, *, encounter_distance_index=None, num_states=5,
 ):
@@ -304,32 +369,19 @@ def _build_controller_for_kind(
     raise ValueError(f"Unknown controller_kind: {controller_kind}")
 
 
-def run_single_seed(lqr, *, controller_kind: str, wave_seed: int):
+def run_single_seed(lqr, *, controller_kind: str, wave_seed: int,
+                    kp: float = KP_GOVERNOR, captive: bool = False):
     """Run one 60-second simulation with the given controller and wave seed.
 
     Returns the closed-loop result together with the ``Moth3D`` system
     and the wave-bearing ``Environment`` so callers can post-compute aux
     trajectories (e.g., ``wave_eta_main`` for the dashboard wave panel).
+
+    The plant carries the P speed-governor sail (``captive=False``) so surge
+    reaches equilibrium under waves; ``captive=True`` selects the towing-tank
+    diagnostic (fixed u, no governor).
     """
-    moth = Moth3D(
-        MOTH_BIEKER_V3,
-        u_forward=ConstantSchedule(U_FORWARD),
-        heel_angle=HEEL_ANGLE,
-        enable_encounter_distance=True,
-    )
-    # surge is dynamic (surge_enabled defaults True) so real speed varies
-    # with wave/control response even though u_forward is a constant
-    # nominal schedule — this is the varying-speed wave study ENC-DIST
-    # (C1.C) targets. Fail loud if that ever silently reverts to the
-    # u_forward(t)·t approximation (the C2.D landmine). A bare ``assert``
-    # is stripped under ``python -O``, which would silently restore that
-    # landmine, so this is a ``ValueError`` (matching moth_scenarios.py's
-    # PID calibration round-trip check).
-    if not moth.enable_encounter_distance:
-        raise ValueError(
-            "wand_vs_pid_waves requires enable_encounter_distance=True "
-            "(ENC-DIST, C1.C) — got False."
-        )
+    moth = _build_plant(controller_kind, lqr=lqr, kp=kp, captive=captive)
     sensor, estimator, controller = _build_controller_for_kind(
         lqr, controller_kind,
         encounter_distance_index=moth.x_n_index, num_states=moth.num_states,
@@ -376,19 +428,10 @@ def run_single_seed(lqr, *, controller_kind: str, wave_seed: int):
 # ---------------------------------------------------------------------------
 
 
-def run_monte_carlo(lqr, *, controller_kind: str, n_seeds: int):
+def run_monte_carlo(lqr, *, controller_kind: str, n_seeds: int,
+                    kp: float = KP_GOVERNOR, captive: bool = False):
     """Run a vmap-batched 60s sweep over n_seeds wave realizations."""
-    moth = Moth3D(
-        MOTH_BIEKER_V3,
-        u_forward=ConstantSchedule(U_FORWARD),
-        heel_angle=HEEL_ANGLE,
-        enable_encounter_distance=True,
-    )
-    if not moth.enable_encounter_distance:
-        raise ValueError(
-            "wand_vs_pid_waves requires enable_encounter_distance=True "
-            "(ENC-DIST, C1.C) — got False."
-        )
+    moth = _build_plant(controller_kind, lqr=lqr, kp=kp, captive=captive)
     sensor, estimator, controller = _build_controller_for_kind(
         lqr, controller_kind,
         encounter_distance_index=moth.x_n_index, num_states=moth.num_states,
@@ -497,11 +540,34 @@ def _wave_eta_main_per_seed(
     return eta_per_seed
 
 
+def _surge_psd(u: np.ndarray, dt: float):
+    """One-sided PSD of the mean-removed surge signal.
+
+    Returns ``(freqs_hz, psd)``. Used to verify governor/wave-band
+    separation: the governor pole (~0.05 Hz) sits well below the wave
+    encounter band (~1 Hz at 10 m/s in Tp=3 s head seas), so surge power
+    should concentrate at low frequency with a distinct encounter peak.
+    """
+    u = np.asarray(u, dtype=float)
+    u = u - np.mean(u)
+    n = u.shape[0]
+    if n < 4:
+        return np.array([0.0]), np.array([0.0])
+    freqs = np.fft.rfftfreq(n, d=dt)
+    spec = np.fft.rfft(u * np.hanning(n))
+    psd = (np.abs(spec) ** 2) / n
+    return freqs, psd
+
+
 def aggregate_mc(result, *, trim_state: np.ndarray, trim_control: np.ndarray,
                  controller_kind: str,
                  u_min: np.ndarray, u_max: np.ndarray,
                  wave_eta_main: np.ndarray | None = None,
-                 target_pos_d: float | None = None):
+                 target_pos_d: float | None = None,
+                 governor_t0: float | None = None,
+                 kp: float = KP_GOVERNOR,
+                 u_target: float = U_TARGET,
+                 captive: bool = False):
     """Aggregate the four required metric groups across MC seeds.
 
     Args:
@@ -552,6 +618,13 @@ def aggregate_mc(result, *, trim_state: np.ndarray, trim_control: np.ndarray,
         "flap_saturation_fraction": [],
         "pitch_rms_error": [],
         "speed_loss_mean": [],
+        # C2.C0 governor standard outputs
+        "added_resistance_mean": [],       # mean ΔT = F_sail − T0 (N)
+        "mean_u_offset": [],               # u_target − mean(u) (m/s)
+        "governor_saturation_fraction": [],  # frac of steps with F_sail clamped to 0
+        "stationarity_passed": [],         # 1.0 if u & pos_d drift within tol
+        "u_drift_ms": [],                  # least-squares u drift over window
+        "pos_d_drift_m": [],               # least-squares pos_d drift over window
     }
     for k in range(n_seeds):
         pd_k = pos_d[k]
@@ -607,6 +680,27 @@ def aggregate_mc(result, *, trim_state: np.ndarray, trim_control: np.ndarray,
             float(float(trim_state[4]) - np.mean(u_k[ss_idx:]))
         )
 
+        # --- C2.C0 governor standard outputs ---
+        u_ss = u_k[ss_idx:]
+        # Mean-u offset: the part the P governor doesn't close (= ΔT/Kp).
+        per_seed["mean_u_offset"].append(float(u_target - np.mean(u_ss)))
+        if captive or governor_t0 is None:
+            # Captive/towing-tank: no governor law → added-resistance N/A.
+            per_seed["added_resistance_mean"].append(float("nan"))
+            per_seed["governor_saturation_fraction"].append(float("nan"))
+        else:
+            # F_sail(t) = max(T0 + Kp*(u_target − u), 0); ΔT = F_sail − T0.
+            f_sail = np.maximum(governor_t0 + kp * (u_target - u_ss), 0.0)
+            per_seed["added_resistance_mean"].append(float(np.mean(f_sail - governor_t0)))
+            per_seed["governor_saturation_fraction"].append(
+                float(np.mean(f_sail <= 0.0))
+            )
+        # Stationarity: a non-stationary run must not be reported as steady.
+        stat = compute_stationarity(u_ss, pd_k[ss_idx:], DT)
+        per_seed["stationarity_passed"].append(1.0 if stat["passed"] else 0.0)
+        per_seed["u_drift_ms"].append(float(stat["u_drift_ms"]))
+        per_seed["pos_d_drift_m"].append(float(stat["pos_d_drift_m"]))
+
     # Aggregate
     agg = {}
     for k, v in per_seed.items():
@@ -624,6 +718,19 @@ def aggregate_mc(result, *, trim_state: np.ndarray, trim_control: np.ndarray,
     agg["duration_s"] = float(DURATION)
     agg["steady_state_start_s"] = float(STEADY_START)
     agg["target_pos_d_m"] = target_pos_d_val
+    # Governor provenance + a scalar stationarity verdict for the study.
+    agg["governor"] = {
+        "captive": bool(captive),
+        "kp_N_per_ms": None if captive else float(kp),
+        "u_target_ms": float(u_target),
+        "thrust0_N": None if (captive or governor_t0 is None) else float(governor_t0),
+    }
+    agg["stationarity_pass_fraction"] = float(
+        np.mean(per_seed["stationarity_passed"])
+    )
+    agg["all_seeds_stationary"] = bool(
+        np.all(np.asarray(per_seed["stationarity_passed"]) > 0.5)
+    )
     return agg
 
 
@@ -792,6 +899,31 @@ def make_mc_distribution_plots(out_dir, mc_agg):
     fig.savefig(p, dpi=110); plt.close(fig); print(f"  saved {p}")
 
 
+def make_surge_psd_plot(out_dir, surge_psd):
+    """Overlay the single-seed surge PSDs, marking governor and encounter bands.
+
+    ``surge_psd`` maps controller kind -> (freqs_hz, psd). Confirms the
+    governor pole sits well below the wave encounter band (bandwidth
+    separation — the license to claim the governor doesn't distort foiling).
+    """
+    plots_dir = out_dir / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+    for name, (freqs, psd) in surge_psd.items():
+        ax.loglog(freqs[1:], psd[1:], label=CONTROLLER_LABELS.get(name, name),
+                  color=CONTROLLER_COLORS.get(name, None), alpha=0.8)
+    gov_pole_hz = KP_GOVERNOR / MOTH_BIEKER_V3.total_mass / (2 * np.pi)
+    ax.axvline(gov_pole_hz, color="gray", ls="--", alpha=0.7,
+               label=f"governor pole ~{gov_pole_hz:.2f} Hz")
+    ax.axvline(1.0 / 3.0, color="k", ls=":", alpha=0.5, label="wave peak 1/Tp")
+    ax.set_xlabel("Frequency (Hz)"); ax.set_ylabel("Surge PSD (m²/s²/Hz)")
+    ax.set_title(f"Surge spectrum — seed {SINGLE_SEED} (governor/wave separation)")
+    ax.legend(fontsize=8); ax.grid(True, which="both", alpha=0.3)
+    fig.tight_layout()
+    p = plots_dir / "surge_psd.png"
+    fig.savefig(p, dpi=110); plt.close(fig); print(f"  saved {p}")
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -801,14 +933,29 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--quick", action="store_true",
                         help=f"Use {N_SEEDS_QUICK} seeds instead of {N_SEEDS_FULL}.")
+    parser.add_argument("--kp", type=float, default=KP_GOVERNOR,
+                        help=f"P speed-governor gain N/(m/s) (default {KP_GOVERNOR}).")
+    parser.add_argument("--captive", action="store_true",
+                        help="Captive/towing-tank diagnostic: surge_enabled=False, "
+                             "fixed u, no governor (mechanism isolation only).")
+    parser.add_argument("--out-dir", type=str, default=None,
+                        help="Output directory (default: this report folder). "
+                             "Point at a scratch dir for exploratory runs that "
+                             "must not overwrite the committed report artifacts.")
     args = parser.parse_args()
 
-    out_dir = Path(__file__).resolve().parent
+    out_dir = (
+        Path(args.out_dir).resolve() if args.out_dir
+        else Path(__file__).resolve().parent
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    kp = float(args.kp)
+    captive = bool(args.captive)
     n_seeds = N_SEEDS_QUICK if args.quick else N_SEEDS_FULL
     print(f"[wand_vs_pid_waves] mode={'quick' if args.quick else 'full'} "
-          f"n_seeds={n_seeds} duration={DURATION}s")
+          f"n_seeds={n_seeds} duration={DURATION}s "
+          f"regime={'captive' if captive else f'governed(Kp={kp})'}")
 
     # 1. Trim + LQR design (LQR only used for trim state/control + bounds)
     t0 = time.time()
@@ -833,6 +980,7 @@ def main():
     for kind in CONTROLLERS:
         result, system, env = run_single_seed(
             lqr, controller_kind=kind, wave_seed=SINGLE_SEED,
+            kp=kp, captive=captive,
         )
         results_single[kind] = result
         systems_single[kind] = system
@@ -857,6 +1005,7 @@ def main():
         t_k = time.time()
         mc_results[kind] = run_monte_carlo(
             lqr, controller_kind=kind, n_seeds=n_seeds,
+            kp=kp, captive=captive,
         )
         print(f"    {kind} done in {time.time()-t_k:.1f}s")
     print(f"  total MC elapsed {time.time()-t0:.1f}s")
@@ -880,6 +1029,13 @@ def main():
     # respond identically, which they don't — but the wave field is
     # solely determined by (seed, foil x_ned) and x_ned depends on the
     # state (u, theta). For consistency we compute eta per controller.
+    # Per-controller governor T0 (pinned-trim thrust at each setpoint). None
+    # in captive mode. Reused for aggregate ΔT and reported as the calm
+    # drag-vs-ride-height decomposition.
+    governor_t0 = {
+        kind: (None if captive else _governor_thrust0_for_kind(kind, lqr=lqr))
+        for kind in CONTROLLERS
+    }
     mc_agg = {}
     for kind in CONTROLLERS:
         true_states_k = np.asarray(mc_results[kind].true_states[:, 1:, :])
@@ -896,7 +1052,20 @@ def main():
             u_max=u_max,
             wave_eta_main=eta_main,
             target_pos_d=_target_pos_d_for_kind(kind, trim_state=trim_state),
+            governor_t0=governor_t0[kind],
+            kp=kp,
+            u_target=U_TARGET,
+            captive=captive,
         )
+
+    # Single-seed surge PSD per controller (governor/wave-band separation).
+    ss_idx = min(int(STEADY_START / DT),
+                 np.asarray(results_single[CONTROLLERS[0]].true_states[1:, 4]).shape[0] - 1)
+    surge_psd = {}
+    for kind in CONTROLLERS:
+        u_series = np.asarray(results_single[kind].true_states[1:, 4])[ss_idx:]
+        freqs, psd = _surge_psd(u_series, DT)
+        surge_psd[kind] = (freqs, psd)
 
     # 6. Plots
     make_single_dashboards(
@@ -904,6 +1073,7 @@ def main():
     )
     make_overlay_plots(out_dir, results_single)
     make_mc_distribution_plots(out_dir, mc_agg)
+    make_surge_psd_plot(out_dir, surge_psd)
 
     # 7. metrics.json
     payload = {
@@ -932,10 +1102,36 @@ def main():
                 "flap_min_deg": float(np.degrees(u_min[0])),
                 "flap_max_deg": float(np.degrees(u_max[0])),
             },
+            "thrust_law": {
+                "regime": "captive" if captive else "speed_governor",
+                "kp_N_per_ms": None if captive else float(kp),
+                "u_target_ms": float(U_TARGET),
+                "thrust0_N": _to_jsonable(governor_t0),
+                "note": (
+                    "F_sail = max(T0 + Kp*(u_target - u), 0) via MothSailForce "
+                    "affine mode (C2.C0); T0 = pinned-trim thrust at each "
+                    "controller's setpoint. Captive: surge_enabled=False, "
+                    "calibrated table sail, fixed u."
+                ),
+            },
         },
         "single_seed": {
             "wave_seed": SINGLE_SEED,
             "metrics": _to_jsonable(single_metrics),
+            # Stored PSD truncated to the informative band (<=5 Hz spans the
+            # governor pole ~0.05 Hz and the wave encounter peak ~1 Hz);
+            # the plot uses the full spectrum.
+            "surge_psd": {
+                kind: {
+                    "freqs_hz": _to_jsonable(
+                        surge_psd[kind][0][surge_psd[kind][0] <= 5.0]
+                    ),
+                    "psd": _to_jsonable(
+                        surge_psd[kind][1][surge_psd[kind][0] <= 5.0]
+                    ),
+                }
+                for kind in CONTROLLERS
+            },
         },
         "monte_carlo": _to_jsonable(mc_agg),
     }
@@ -964,6 +1160,19 @@ def main():
             f"pitch_RMS={a['pitch_rms_error']['mean']:.4f}rad "
             f"speed_loss={a['speed_loss_mean']['mean']:.3f}m/s "
             f"depth_factor_mean={a['depth_factor_mean']['mean']:.3f}"
+        )
+    # C2.C0 governor + stationarity readout (the point of this chunk).
+    print("\n--- governor / stationarity (steady-state) ---")
+    for kind in CONTROLLERS:
+        a = mc_agg[kind]
+        print(
+            f"  {kind:12s} "
+            f"added_resistance={a['added_resistance_mean']['mean']:.2f}N "
+            f"mean_u_offset={a['mean_u_offset']['mean']:.3f}m/s "
+            f"gov_sat={a['governor_saturation_fraction']['mean']*100:.1f}% "
+            f"u_drift={a['u_drift_ms']['mean']:.3f}m/s "
+            f"pos_d_drift={a['pos_d_drift_m']['mean']:.4f}m "
+            f"stationary={a['stationarity_pass_fraction']*100:.0f}%"
         )
     print("\nDone.")
 

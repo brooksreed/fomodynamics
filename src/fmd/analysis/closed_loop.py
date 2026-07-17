@@ -289,6 +289,68 @@ def compute_extended_metrics(
 
 
 # ---------------------------------------------------------------------------
+# Stationarity (C2.C0)
+# ---------------------------------------------------------------------------
+
+def compute_signal_drift(signal: np.ndarray, dt: float) -> tuple[float, float]:
+    """Least-squares drift rate and total drift over a signal window.
+
+    Returns ``(slope_per_s, total_drift)`` where ``total_drift = slope *
+    (T-1)*dt`` is the fitted change across the whole window. Using the
+    linear trend rather than raw end-minus-start makes the estimate robust to
+    wave ripple at the window endpoints.
+    """
+    signal = np.asarray(signal, dtype=float)
+    n = signal.shape[0]
+    if n < 2:
+        return 0.0, 0.0
+    t = np.arange(n) * dt
+    slope = float(np.polyfit(t, signal, 1)[0])
+    total = slope * (t[-1] - t[0])
+    return slope, float(total)
+
+
+def compute_stationarity(
+    u: np.ndarray,
+    pos_d: np.ndarray,
+    dt: float,
+    *,
+    u_drift_tol: float = 0.5,
+    pos_d_drift_tol: float = 0.05,
+) -> dict:
+    """Pass/fail stationarity of a steady-state window (C2.C0).
+
+    A run is *stationary* if neither forward speed ``u`` nor ride height
+    ``pos_d`` drifts more than its tolerance across the window (least-squares
+    trend). This exists because the C2.B study averaged a decaying surge
+    transient as if it were a steady state — a non-stationary run must never
+    again be reported as a steady mean.
+
+    Args:
+        u, pos_d: 1-D windowed time series (already sliced to the metrics
+            window).
+        dt: timestep (s).
+        u_drift_tol: max |total u drift| (m/s) over the window to pass.
+        pos_d_drift_tol: max |total pos_d drift| (m) over the window to pass.
+
+    Returns a dict with drift magnitudes, rates, the tolerances, and a
+    boolean ``passed``.
+    """
+    u_slope, u_drift = compute_signal_drift(u, dt)
+    pd_slope, pd_drift = compute_signal_drift(pos_d, dt)
+    passed = abs(u_drift) <= u_drift_tol and abs(pd_drift) <= pos_d_drift_tol
+    return {
+        "u_drift_ms": u_drift,
+        "u_drift_rate_ms_per_s": u_slope,
+        "pos_d_drift_m": pd_drift,
+        "pos_d_drift_rate_m_per_s": pd_slope,
+        "u_drift_tol_ms": u_drift_tol,
+        "pos_d_drift_tol_m": pos_d_drift_tol,
+        "passed": bool(passed),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Wave vs calm comparison metrics
 # ---------------------------------------------------------------------------
 
