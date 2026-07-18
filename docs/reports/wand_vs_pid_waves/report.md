@@ -6,7 +6,11 @@ speed governor, with each controller calibrated and initialized at its **own**
 pinned trim. Provenance (from `metrics.json["provenance"]`): fmd commit `701893e`
 (branch `wand_vs_pid_waves`, **editable install** — this is a pre-merge vintage;
 it becomes a pinned vintage when the branch merges), params hash `a669b19e5c68`.
-Artifacts regenerated at commit `2b1e157`.
+Artifacts regenerated at commit `2b1e157`. Updated 2026-07-18: the
+mechanical-vs-PID tracking attribution (flagged finding 2, § Mechanism,
+§ Tuning suggestions) upgraded from hypothesis to measurement by a follow-up
+matched-stiffness gain study (same vintage and params hash, same paired seeds,
+50-seed runs verified bit-exact against this report's metrics.json).
 
 The previous report (2026-05-13) was generated on physics with an inverted
 wave-orbital forcing sign and no surge equilibrium; its numbers are superseded.
@@ -32,13 +36,18 @@ corrected model.
 **pid_natural no longer wins on tracking.** The original physics guidance expected
 the PID to beat the mechanical wand on ride-height RMS; pre-fix it did (0.091 vs
 0.252 m). Post-fix the ordering is **reversed**: mechanical 0.0926 m vs pid_natural
-0.1029 m about the same setpoint. This is not a tuning bug: with disturbance and
-wand feedback now phase-cooperating, the passive linkage's stiffer wand→flap gain
-attenuates wave-band height error slightly better than the deliberately soft PID
-(Kp=0.6), at the cost of ~15% more flap activity and 8% vs 1.9% flap saturation.
-The integrator's DC advantage is intact but no longer decisive, because the
-mechanical wand's steady-state bias is now −0.05 mm in calm water (auto-tuned
-pullrod) and only +1.7 cm under waves (rectification).
+0.1029 m about the same setpoint. The follow-up matched-stiffness study decomposed
+the 10.2 mm paired gap: **~97% is the integrator** — at the same Kp = 0.6, dropping
+Ki (0.1 → 0) closes +9.9 mm [9.3, 10.5] and statistically ties the linkage
+(+0.33 mm [−0.17, +0.84], t = 1.3). At the linkage's measured trim stiffness
+(Kp = 0.844, Ki = 0) the PID remains 2.44 mm [2.2, 2.7] behind — the small
+nonlinearity/phase contribution — while a *softer* linear PID (Kp = 0.4, Ki = 0)
+**beats** the linkage by 3.1 mm at 60% of its flap effort (0.1% vs 8.0%
+saturation). So the ordering flip is a tuning artifact of the shipped defaults,
+not structural superiority of mechanical feedback: the integrator injects
+wave-group-band variance by servoing the wand inversion's wave-rectified bias
+(its classical DC job is already done by the own-trim calibration — mechanical
+calm bias −0.05 mm via the auto-tuned pullrod).
 
 **The pid_deeper "theta-shift" limitation is gone — the old flagged ordering
 reversed.** Pre-fix, pid_deeper tracked its own setpoint *worse* than pid_natural
@@ -342,14 +351,24 @@ pid_natural excess (Δ = 1.2 breaches, ~2%) is resolvable under seed pairing
 and consistent with its upward rectification (tip ~1.3 cm shallower), but is
 noise-level next to the 34-breach setpoint effect.
 
-**Why mechanical now beats pid_natural on wave-band tracking.** The linkage's
-effective height-to-flap gain (set by geometry) is stiffer than Kp=0.6, and it
-acts with zero controller lag; with forcing and feedback in phase it shaves
-~10% off the height RMS. The price shows up exactly where the physics guidance
-says it should: highest flap RMS (0.106 rad), highest saturation (8%), and the
-highest added resistance (9.4 N — flap motion is drag). pid_natural buys a
-calmer flap and 0.9 N added resistance with slightly looser height tracking.
-Neither difference approaches the breach-count significance.
+**Why mechanical now beats pid_natural on wave-band tracking (measured, not
+hypothesized).** Not primarily because the linkage is stiffer: a gain sweep at
+Ki = 0 shows tracking is nearly flat in stiffness (Kp 0.2–1.5 spans ~8% in RMS,
+shallow optimum at Kp ≈ 0.3–0.4, and stiffening 0.6 → 0.844 *worsens* tracking
+by 2.1 mm — at Hs = 0.5 m the residual is disturbance-dominated). The gap is
+almost entirely pid_natural's integrator: the wand inversion's height estimate
+is biased under waves (θ ≠ θ_ref aliasing + rectification), so Ki servoes the
+true height to a wandering wave-group-scale reference — flipping a 0.9 cm
+ride-low droop into a 1.3 cm ride-high offset and, dominantly, inflating height
+std 92.5 → 101.9 mm. In *cost* terms the linkage does behave like the
+Kp = 0.844 linear feedback it kinematically is at trim: flap RMS 0.106 vs
+0.109 rad, pitch RMS 0.0363 vs 0.0371 for the matched PID; its 8.0% saturation
+matches a Kp ≈ 1.15 PID, consistent with its progressive high-side gain
+(1.29 rad/m at 10 cm high vs 0.70 at 10 cm deep) concentrating authority — and
+saturation — on the breach side. That favorable nonlinearity is worth 2.44 mm
+[2.2, 2.7] against the iso-stiffness linear PID, but buys no measurable
+breach-count advantage (58.9–63.7 breaches across the whole Kp range at this
+setpoint). Neither difference approaches the breach-count significance.
 
 **Why pid_deeper tracks best.** At depth factor ≈ 0.998 the free-surface lift
 model is saturated (σ ≈ 1): heave forcing from surface proximity is minimal, so
@@ -391,10 +410,16 @@ Directions worth exploring:
   setpoint is a pure racing tradeoff — each cm of extra depth costs strut drag
   (added resistance) and buys tip margin. The drag-optimal ride height under
   waves is now a well-posed question; sweep target_pos_d between −1.40 and −1.17.
-- **Kp/Ki on the honest plant**: the pre-fix conclusion "PID needs to be soft"
-  was tuned against exaggerated disturbance. With the corrected phase, a stiffer
-  Kp may close the ~10% tracking gap to the mechanical wand before hitting the
-  saturation/added-resistance penalty the linkage pays.
+- **Kp/Ki on the honest plant — measured (2026-07-18 follow-up)**: the answer
+  is *softer*, not stiffer, and integrator-free. **Kp = 0.4, Ki = 0, Kd = 0**
+  beats the mechanical wand on tracking (89.6 vs 92.7 mm RMS, paired
+  −3.1 mm [−3.7, −2.4]) at 60% of its flap effort, 0.1% vs 8.0% saturation,
+  and ≈0 N vs 9.4 N added resistance; Kp = 0.3–0.5 is a plateau. Ki = 0.1
+  costs +9.9 mm at Kp = 0.6 and +22.7 mm at Kp = 0.4 (wave-group variance
+  injection through the wand-inversion bias). No pitch-RMS blowup anywhere in
+  Kp ∈ [0.2, 1.5] — the old "margin under wave forcing" rationale for the
+  conservative default does not bind on the governed plant; the real cost of
+  stiffness is flap saturation and added resistance.
 - **Derivative action**: unchanged advice — low-pass the wand (~1 Hz cutoff is
   now *at* the encounter band; pick per sea state) or use an EKF for w before
   enabling Kd.
