@@ -16,8 +16,11 @@ moved, and which orderings flipped.
 ## Flagged findings (read first)
 
 **Breach count is set by the setpoint, not the control law.** Mechanical wand and
-natural-trim PID — same −1.40 m target — now breach at statistically equal rates
-(62.8 ± 2.5 vs 64.0 ± 2.9 per 50-s window, paired seeds). The pre-fix result that
+natural-trim PID — same −1.40 m target — now breach at practically tied rates
+(62.8 ± 2.5 vs 64.0 ± 2.9 per 50-s window; the Δ = 1.2-breach pid_natural excess
+is resolvable under seed pairing, t ≈ 3.0, and physically coherent — its upward
+wave rectification rides the tip ~1.3 cm shallower — but is negligible against
+the ~34-breach setpoint effect). The pre-fix result that
 made the mechanical wand look 3.4× safer than pid_natural (25.2 vs 85.9) was an
 artifact: the mechanical wand rode ~21 cm low (≈90% wave rectification plus a
 speed transient — halved by the physics fix, mostly eliminated by the speed
@@ -238,8 +241,9 @@ Per-plot notes:
   cross-setpoint comparison): three cleanly separated boxes, **pid_deeper lowest**
   (0.0792), mechanical middle (0.0926), pid_natural highest (0.1029). Both
   orderings involving a PID flipped vs the 2026-05 vintage (see Reconciliation).
-  Note the spreads: per-seed std is ~2% of the mean — the post-fix wave response
-  is an entrained, regular oscillation, so 50 seeds give very tight CIs.
+  Note the spreads: per-seed std is 2–4% of the mean (2.3% mech, 3.6%
+  pid_natural, 1.8% deeper) — the post-fix wave response is an entrained,
+  regular oscillation, so 50 seeds give very tight CIs.
 - `mc_ride_height_rms.png` (RMS vs natural trim): pid_deeper reads 0.2367 m
   because its setpoint is 23.1 cm from natural trim — the column measures the
   offset, not tracking. Kept for continuity; do not use cross-setpoint.
@@ -290,15 +294,15 @@ Seeds are paired (same wave realizations).
 | pid_deeper breach margin | 15× / 51× | **2.2×** | Two accidental protections removed: inverted orbital forcing pushed the boat down at crests; and (for pre-fix mech/deeper) u-decay parked them deeper than intended |
 | mechanical ride bias | 21 cm low | 1.7 cm low | ~90% of the pre-fix droop was wave rectification under bugged forcing (halved by the fix); DC part removed by pullrod auto-tune |
 | speed loss | 1.5–4.6 m/s | 0.02–0.23 m/s | Pre-fix runs had no surge equilibrium (thrust table gives zero surge stiffness); governor holds u by construction |
-| mech-vs-PID flap-activity gap | 1.6× RMS, 17% vs 1.2% sat | 1.15× RMS, 8.0% vs 1.9% sat | Opposing-phase forcing exaggerated the passive linkage's wildness |
-| per-seed scatter | RMS spread 0.12–0.54 m | ±2% of mean | Cooperating-phase response is entrained; pre-fix opposing phase drove intermittent near-instability |
+| mech-vs-PID flap-activity gap | 1.46× RMS, 17% vs 1.2% sat | 1.15× RMS, 8.0% vs 1.9% sat | Opposing-phase forcing exaggerated the passive linkage's wildness |
+| per-seed scatter | mechanical RMS spread 0.12–0.54 m (pid_natural was already tight, 0.08–0.12) | 2–4% of mean, all three | Cooperating-phase response is entrained; pre-fix opposing phase drove intermittent near-instability in the linkage |
 
 **Orderings that flipped:**
 
 | Ordering | pre-fix | post-fix |
 |---|---|---|
 | Tracking (RMS vs own setpoint) | natural 0.091 < deeper 0.189 < mech 0.252 | **deeper 0.079 < mech 0.093 < natural 0.103** |
-| Breaches, mechanical vs pid_natural | mech 25.2 ≪ natural 85.9 | statistical tie (62.8 vs 64.0) |
+| Breaches, mechanical vs pid_natural | mech 25.2 ≪ natural 85.9 | practically tied (62.8 vs 64.0; Δ resolvable under pairing, negligible) |
 | Pitch RMS | natural best (0.038) | deeper best (0.030); mech = natural |
 | Wand-angle signals | "nearly identical" all three | pid_deeper distinct (~20° larger) |
 
@@ -333,7 +337,10 @@ crests; corrected physics gives the honest geometric answer.
 **Why mechanical ≈ pid_natural on breaches now.** Both hold the same mean height
 to within 3 cm of each other (−1.382 vs −1.413) at the same speed. Breach onset
 at this setpoint is driven by the wave field, not by the ±1 cm differences in
-tracking. The two controllers' breach counts differ by less than half a std.
+tracking. The marginal distributions overlap almost completely; the small
+pid_natural excess (Δ = 1.2 breaches, ~2%) is resolvable under seed pairing
+and consistent with its upward rectification (tip ~1.3 cm shallower), but is
+noise-level next to the 34-breach setpoint effect.
 
 **Why mechanical now beats pid_natural on wave-band tracking.** The linkage's
 effective height-to-flap gain (set by geometry) is stiffer than Kp=0.6, and it
@@ -406,7 +413,8 @@ Directions worth exploring:
 - The governor is a study-scoped "sailor holds boatspeed" model (P-law on u).
   Real sail thrust dynamics (gusts, sheeting lag) are not modeled; captive mode
   (`--captive`) exists for towing-tank-style checks.
-- Wave rectification (mean offsets of −1.3 to +1.7 cm under waves despite
+- Wave rectification (mean offsets of −1.3 to +1.7 cm under waves, positive =
+  below target — mech +1.7 rides low, pid_natural −1.3 rides high — despite
   mm-exact calm calibration; sign differs by controller) is a real
   nonlinear-response effect, present for all controllers, and is reported, not
   calibrated away.
