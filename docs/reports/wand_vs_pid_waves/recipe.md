@@ -15,25 +15,39 @@ their own tuning.
 - Trim solve: `design_moth_lqr(u_forward=10.0)` (heel=30 deg)
 - Wave preset: `WAVE_SF_BAY_MODERATE` (Hs=0.5m, Tp=3.0s, JONSWAP
   gamma=4.0, Stokes 2nd order), head seas (`mean_direction=pi`)
-- Controllers (all in `fmd.simulator.moth_scenarios`):
-  - `create_mechanical_wand_config()` (default linkage,
-    `pullrod_offset=0.005`)
+- Controllers (all in `fmd.simulator.moth_scenarios`), each calibrated
+  and initialized at its **own** pinned trim:
+  - `create_mechanical_wand_config()` — passive linkage; the
+    `pullrod_offset` is **auto-tuned closed-form at the trim**
+    (`WandLinkage.required_pullrod_offset`; 0.005508 m for
+    BIEKER_V3 / 30° / u=10), so the natural trim is the linkage's
+    exact calm equilibrium. Explicit overrides still win.
   - `create_pid_wand_config()` — natural trim, default gains
     `Kp=0.6, Ki=0.1, Kd=0.0`, `target_pos_d = trim pos_d ≈ -1.40 m`
   - `create_pid_wand_config(target_pos_d=compute_tip_at_surface_pos_d() + 0.30)`
     — deeper trim; commands the boat 30 cm below the foil-tip
     ventilation threshold (NED-positive-down: `+ 0.30` makes pos_d
     *less* negative = boat rides lower = foil tip more submerged).
+    The factory calibrates theta_ref / flap / elevator at the pinned
+    trim of the target depth, so the old ~8 cm "theta-shift" offset no
+    longer exists (it was a speed effect; superseded 2026-07).
+- Thrust: **P speed governor** (`apply_speed_governor`) —
+  `F = max(T0 + Kp*(u_target - u), 0)`, Kp = 40 N/(m/s), u_target = 10;
+  T0 = pinned-trim thrust at each controller's own setpoint (75.5 N
+  natural, 91.9 N deeper). This gives every configuration a surge
+  equilibrium; the calibrated thrust table alone is a required-thrust
+  curve with zero surge stiffness and must not be the dynamic law.
+  `--captive` runs `surge_enabled=False` as a towing-tank diagnostic.
 - Closed-form wand-to-height inversion (PID): under trim attitude
-  (theta=trim_theta) and constant heel, the mapping is:
+  (theta=theta_ref) and constant heel, the mapping is:
   `pos_d_est = -z_pivot * cos(heel) - L_wand * cos(wand_angle) + offset`
   where `offset` is a per-construction calibration that absorbs the
-  trim-theta residual. The inversion is pos_d-agnostic for fixed theta.
-  A known limitation: a different setpoint shifts the pitch equilibrium,
-  introducing a theta-induced steady-state offset of order ~8 cm
-  (documented in scratchpad, user-approved to accept and document).
+  trim-theta residual. theta_ref is the pinned-trim pitch at the
+  controller's own setpoint, making the calm bias mm-level everywhere.
 - Simulation: 60s duration, dt=0.005s, paired wave seeds (all
-  controllers see the same wave field per seed).
+  controllers see the same wave field per seed); plant built with
+  `enable_encounter_distance=True` (integrated encounter position
+  feeds the wave-aware breach metric).
 - Monte Carlo: 50 wave seeds (5 in `--quick`); all controllers run
   through the same `fmd.simulator.sweep.sweep_closed_loop` vmap.
 
@@ -73,7 +87,8 @@ docs/reports/wand_vs_pid_waves/
     ├── mc_ride_height_rms_around_target.png  50-seed RMS vs own setpoint
     ├── mc_breach_distribution.png     50-seed box+strip
     ├── mc_flap_activity.png           50-seed box+strip
-    └── mc_pitch_speed.png             50-seed box+strip (paired)
+    ├── mc_pitch_speed.png             50-seed box+strip (paired)
+    └── surge_psd.png                  seed-0 surge spectra (governor/wave bands)
 ```
 
 ## Report structure (followed by `interpretation_skill.md`)
@@ -94,10 +109,11 @@ docs/reports/wand_vs_pid_waves/
    Use `ride_height_rms_around_target` (not `ride_height_rms`) for
    cross-setpoint comparison — `ride_height_rms` penalises any
    controller whose setpoint differs from the natural trim.
-6. **Mechanism** — why the deeper-trim PID dominates on breach count;
-   why the PID at natural trim tracks perfectly but breaches more;
-   why rms_vs_target for pid_deeper is higher than pid_natural (theta
-   equilibrium shift at the deeper setpoint — see scratchpad).
+6. **Mechanism** — why the deeper-trim PID wins on breach count (tip
+   margin vs crest amplitude — a setpoint effect, not a control-law
+   effect); what each controller pays in added resistance under the
+   governor; why the mechanical linkage and the PIDs differ on
+   wave-band tracking and flap activity.
 7. **Tuning suggestions** — lead with deeper-trim as the recommendation.
 
 ## When to re-run
@@ -111,6 +127,9 @@ docs/reports/wand_vs_pid_waves/
   filter, wave-aware inversion).
 - After tuning the default PID gains (`_DEFAULT_PID_KP/KI/KD` in
   `src/fmd/simulator/moth_scenarios.py`).
+- Governor changes (`apply_speed_governor`, Kp/u_target defaults) or
+  per-setpoint trim-calibration changes (`setpoint_trim`,
+  `WandLinkage.required_pullrod_offset`).
 
 ## What to tune
 
@@ -129,11 +148,14 @@ sensor, estimator, controller = create_pid_wand_config(
 )
 ```
 
-The inversion bakes in `cos(heel)` on the pivot z-component, making it
-pos_d-agnostic under theta=trim_theta. Known limitation: a different
-setpoint shifts the pitch equilibrium, leaving an ~8 cm residual bias
-(see scratchpad). The breach metric (1.7 vs 25 vs 86 per 60 s window)
-tells the safety story better than rms_vs_target.
+The factory solves the pinned trim at `target_pos_d` and calibrates the
+inversion's theta_ref (plus flap/elevator references) there, so the
+controller reaches its setpoint with mm-level calm bias at any depth in
+the wand's range. Pair a non-natural setpoint with the speed governor
+so it also has its thrust equilibrium. The 2026-07 50-seed result:
+breaches 28.4 (deeper) vs 62.8 / 64.0 (natural-setpoint controllers)
+per 50-s window — a ~2.2x margin bought for ~+16 N calm thrust; the
+deeper config also has the best tracking and pitch numbers.
 
 Other things to tune:
 

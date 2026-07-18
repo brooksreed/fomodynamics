@@ -34,7 +34,8 @@ docs/reports/wand_vs_pid_waves/
     ├── mc_ride_height_rms_around_target.png
     ├── mc_breach_distribution.png
     ├── mc_flap_activity.png
-    └── mc_pitch_speed.png
+    ├── mc_pitch_speed.png
+    └── surge_psd.png
 ```
 
 ## Workflow
@@ -53,10 +54,21 @@ restate them in the Setup section.
 This is the source of truth for **every number** in the report.
 Key fields:
 
-- `setup` — trim state, wave preset, control bounds, sim parameters.
+- `provenance` — fmd commit, install mode (editable vs pinned), params
+  hash. Quote it in the report header; an `editable` install mode means
+  a pre-merge branch vintage.
+- `setup` — trim state, wave preset, control bounds, sim parameters,
+  `thrust_law` (speed-governor Kp/u_target/per-controller T0) and
+  `setpoint_trims` (each controller's own pinned trim: pos_d, theta,
+  flap, elevator, thrust).
 - `single_seed.metrics.<controller>` — extended metrics for seed=0
   (ride height stats, pitch stats, speed stats, foil tip depth,
-  control effort, control rate, settling time, has_nan).
+  control effort, control rate, settling time, has_nan). NOTE: the
+  single-seed `foil_tip_depth` block is **still-water-referenced**
+  (`wave_aware: false`) — do not mix with the wave-aware MC breach
+  columns.
+- `single_seed.surge_psd` — per-controller surge power spectrum
+  (frequencies + PSD, plotted in `surge_psd.png`).
 - `monte_carlo.<controller>` — per-seed arrays plus aggregate
   mean/std/median/min/max for: `ride_height_rms`,
   `ride_height_rms_around_target` (RMS vs own setpoint — use this
@@ -64,8 +76,19 @@ Key fields:
   natural-trim pos_d and penalises any controller that targets
   a different depth), `ride_height_std`, `ride_height_mean`,
   `target_pos_d_m`, `depth_factor_mean`, `breach_count`,
-  `breach_fraction`, `flap_rms`, `flap_saturation_fraction`,
-  `pitch_rms_error`, `speed_loss_mean`.
+  `breach_fraction` (both wave-aware), `flap_rms` (deviation from the
+  controller's **own** trim flap), `flap_saturation_fraction`,
+  `pitch_rms_error` (vs natural-trim theta for all controllers),
+  `speed_loss_mean`, plus the governor outputs `added_resistance_mean`,
+  `mean_u_offset`, `governor_saturation_fraction`,
+  `stationarity_passed` / `u_drift_ms` / `pos_d_drift_m`, and the
+  scalar verdicts `stationarity_pass_fraction` / `all_seeds_stationary`.
+
+**Governor tautology — do not present as a cross-check**: when
+`governor_saturation_fraction` is 0, `added_resistance_mean` equals
+`Kp * mean_u_offset` **algebraically** (the governor is an unsaturated
+P-law). The two columns are the same measurement in different units;
+never cite their agreement as independent corroboration.
 
 Controllers in `metrics.json`:
 - `mechanical` — passive linkage
@@ -80,13 +103,17 @@ Cross-check `setup.trim_state.theta_deg` (small positive pitch ≈ 1°
 is normal). Each controller's `target_pos_d_m` is stored in
 `monte_carlo.<controller>`.
 
-**Important cross-setpoint caveat**: `pid_deeper.rms_vs_target` (0.189m
-in the 50-seed run) is higher than `pid_natural.rms_vs_target` (0.091m).
-This is a documented known limitation, NOT a bug. The deeper setpoint
-shifts the pitch equilibrium from ~0.8° to ~3°, and the inversion was
-calibrated at the natural trim theta. The theta-induced residual is
-~8 cm in calm water, ~14 cm under waves. The safety-relevant metric is
-`breach_count`, where pid_deeper dominates (1.7 vs 25 vs 86).
+**Historical cross-setpoint caveat (superseded 2026-07)**: the 2026-05
+vintage showed `pid_deeper.rms_vs_target` (0.189 m) higher than
+`pid_natural` (0.091 m) and attributed it to a "theta-shift" inversion
+bias. That bias was a *speed* effect (the pre-fix plant had no surge
+equilibrium; the deeper config decelerated ~4.6 m/s and pitched up
+~3°). On the governed plant with per-setpoint trim calibration the
+ordering **reversed**: pid_deeper now has the lowest RMS vs its own
+setpoint (0.079 vs 0.093 mechanical / 0.103 pid_natural in the 2026-07
+50-seed run). If you see a large (>2 cm) mean offset between any
+controller's `ride_height_mean` and its `target_pos_d_m`, flag it —
+it is no longer an accepted limitation.
 
 ### Step 3: Read `report_guidelines.txt`
 
@@ -118,6 +145,10 @@ Group plots logically:
 - **Monte Carlo (50 seeds)**: `mc_*.png`. Discuss the distribution
   spread, paired comparison, outliers. Use `mc_ride_height_rms_around_target.png`
   (not `mc_ride_height_rms.png`) when comparing cross-setpoint tracking quality.
+- **Surge spectrum**: `surge_psd.png` (seed 0). Check band separation:
+  the governor pole (~0.05 Hz) must sit well below the wave encounter
+  peak (~1 Hz at 10 m/s head seas) — that separation is what justifies
+  reading the wave-band metrics as governor-invariant.
 
 ### Step 5: Cross-check NED signs
 
@@ -143,6 +174,10 @@ Suggested structure (mirrors `recipe.md` § "Report structure"):
 ```markdown
 # wand_vs_pid_waves — report (regenerated <date>)
 
+## Flagged findings (read first)
+- (anything from § "What to flag"; orderings that changed vs the
+  previous committed vintage)
+
 ## Summary
 - (3-5 bullets, lead with headline RMS / breach numbers)
 
@@ -151,23 +186,35 @@ Suggested structure (mirrors `recipe.md` § "Report structure"):
 - Pull verbatim from metrics.json["setup"].
 
 ## Single-seed time series (seed=0)
-- Walk through dashboard_mechanical.png + dashboard_pid.png.
+- Walk through dashboard_mechanical.png, dashboard_pid_natural.png,
+  dashboard_pid_deeper.png.
 - Walk through compare_ride_height.png, compare_flap_command.png,
   compare_wand_angle.png.
 
 ## Monte Carlo across 50 seeds
-- mc_ride_height_rms.png — RMS distribution.
+- mc_ride_height_rms.png / mc_ride_height_rms_around_target.png —
+  RMS distributions (own-setpoint version for comparisons).
 - mc_breach_distribution.png — breach count distribution.
 - mc_flap_activity.png — flap RMS distribution.
 - mc_pitch_speed.png — pitch RMS and speed-loss distributions.
+- surge_psd.png — governor/wave band separation.
+
+## Reconciliation (only when regenerating after a model/physics change)
+- Diff the headline numbers against the previous committed
+  metrics.json (`git show <old-commit>:docs/reports/.../metrics.json`).
+- State explicitly: which claims survived, which numbers moved (and
+  why), which orderings flipped.
 
 ## Mechanism
-- Why does PID outperform on tracking? (closed-form inversion +
-  integrator removes steady bias)
+- Which controller wins tracking, and why? (Compare the linkage's
+  geometric gain and zero lag vs the PID's Kp and integrator; check
+  each controller's ride_height_mean against its own target.)
 - Why is it different on breaches/saturation? Inspect the
   ride_height_mean values to compare steady-state setpoints —
   a controller that tracks trim exactly may breach more if the
   trim point is itself close to the foil-tip surface intersection.
+- What does the governor cost? (added_resistance_mean per controller;
+  remember it is Kp*mean_u_offset by construction.)
 
 ## Tuning suggestions
 - Pull from recipe.md § "What to tune" and adapt to the observed
@@ -208,28 +255,46 @@ Suggested structure (mirrors `recipe.md` § "Report structure"):
   `pos_d_est = -wand_pivot_z_body * cos(heel) - wand_length * cos(wand_angle) + offset`,
   where `offset` is a per-construction calibration that absorbs the
   trim-theta residual and makes the inversion pos_d-agnostic for any
-  pos_d reached under theta=trim_theta. Residual bias arises when the
-  operating theta differs from trim_theta (e.g., the deeper setpoint
-  shifts pitch equilibrium by ~2°, producing ~8 cm calm-water bias).
+  pos_d reached under theta=trim_theta. Since 2026-07 the factory
+  calibrates theta_ref (and flap/integrator state) at the **pinned trim
+  of the controller's own target_pos_d**, so the residual is mm-level
+  at every setpoint (at equal speed, trim pitch is nearly
+  depth-invariant). Large biases only reappear if the boat operates
+  far from its calibrated speed/pitch.
+- **Speed governor**: sail thrust is `F = max(T0 + Kp*(u_target - u), 0)`
+  with T0 = the pinned-trim thrust at the controller's own setpoint.
+  It models "sailor holds boatspeed", giving every configuration a
+  surge equilibrium. The calibrated thrust *table* is a required-thrust
+  curve, not a control law — used directly as the dynamic law it has
+  zero surge stiffness and u drifts (the pre-2026-07 vintage's defect).
 
 ## What to flag (do **not** silently accept)
 
 If any of the following is observed, write a flag at the top of the
 report instead of (or in addition to) the headline summary:
 
-- **pid_natural has higher rms_vs_target than mechanical.** pid_natural
-  should win on tracking (lowest rms_vs_target) — if not, there's a
-  tuning issue or sign error in the inversion.
-- **pid_deeper breach_count ≥ mechanical breach_count.** The whole
-  point of the deeper setpoint is to suppress breaches. If this
-  doesn't hold, the target is not deep enough or the theta-shift
-  bias is overwhelming the safety margin.
+- **Any controller's ride_height_mean more than ~3 cm from its own
+  target_pos_d_m.** Calm-water calibration is mm-exact by construction
+  (per-setpoint trim + pullrod auto-tune); the only accepted wave-mean
+  offset is rectification at the cm level. Anything larger indicates a
+  calibration regression.
+- **Any seed with stationarity_passed = 0, or
+  governor_saturation_fraction > 0.** A non-stationary run must not be
+  averaged into "steady-state" statistics; a saturating governor breaks
+  the added-resistance = Kp*mean_u_offset identity and the equal-speed
+  comparison.
+- **pid_deeper breach_count ≥ pid_natural breach_count.** The whole
+  point of the deeper setpoint is to suppress breaches; the 2026-07
+  expected margin is ~2.2x fewer than the natural-setpoint controllers.
+  (mechanical vs pid_natural is expected to be a near-tie — both sit at
+  the same setpoint; a large gap between THEM is what deserves a flag.)
 - **Mean foil depth factor < 0.3 for any controller.** Foil is
   ventilating on average — wave amplitude is outside the envelope.
-- **rms_vs_target ordering for pid_deeper > pid_natural.** This IS
-  the expected outcome (theta-shift limitation) but still deserves
-  a clear flag and explanation so readers don't interpret it as a
-  bug. Do NOT silently accept — document the mechanism.
+- **Tracking (rms_around_target) ordering**: 2026-07 expectation is
+  pid_deeper < mechanical < pid_natural, with the mechanical-vs-PID gap
+  small (~10%). A *large* PID tracking win over mechanical (like the
+  pre-fix 2.8x) or a pid_deeper tracking *loss* would both be
+  surprising now — flag and explain rather than silently accept.
 - **Asymmetric saturation** (flap pinned to only one limit > 50%
   of the time). Indicates a steady bias the integrator cannot
   recover from.
