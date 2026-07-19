@@ -218,12 +218,11 @@ class TestWandOnlyEKFConvergence:
         contaminates them through the process-model coupling — a ratio test is
         the wrong shape (fast settle -> small denominator).
 
-        The §4.6 hull-frame wand fix shifts the wand measurement Jacobian's
-        theta-column by -1, which changed the (already marginal) u dead-reckoning
-        so that the full-state error is now u-dominated; the observable states
-        remain small and the true trajectory stays stable and physical. The
-        wand-only u behavior is revisited when the wand study is re-run in
-        Phase 2 (C2). See docs/private/plans/physics_fixes C1.D retro.
+        The hull-frame wand measurement (angle taken in the hull frame, not
+        the world frame) shifts the wand measurement Jacobian's theta-column
+        by -1, which changes the (already marginal) u dead-reckoning so that
+        the full-state error is u-dominated; the observable states remain
+        small and the true trajectory stays stable and physical.
         """
         obs_idx = [0, 1, 2, 3]  # pos_d, theta, w, q (u=4 unobservable)
         est_errors = np.asarray(wand_only_result.estimation_errors)[:, obs_idx]
@@ -478,7 +477,7 @@ class TestMetricsComputation:
 
 
 # ---------------------------------------------------------------------------
-# TestTrimAtSetpoint (C2.C2 — per-setpoint calibration / Option D)
+# TestTrimAtSetpoint (per-setpoint controller calibration)
 # ---------------------------------------------------------------------------
 
 from fmd.simulator.components.moth_forces import compute_tip_at_surface_pos_d
@@ -528,18 +527,19 @@ def _own_trim_wand_angle(pos_d, theta):
 
 
 class TestTrimAtSetpoint:
-    """Per-setpoint calibration locks (C2.C2 / Option D).
+    """Per-setpoint calibration locks.
 
     Each controller must be calibrated at its OWN pinned trim, its
     setpoint an exact calm equilibrium by construction. These are the
-    round-trip trim-identity tests the roadmap's C2.C2 brief requires.
+    round-trip trim-identity tests for that calibration.
     """
 
     def test_pid_deeper_calibrated_at_own_trim(
         self, pid_deeper_controller, deeper_trim
     ):
         """theta_ref / flap_trim / elevator_trim come from the deeper pinned
-        trim, not the natural trim (the pre-C2.C2 foreign-calibration bug)."""
+        trim, not the natural trim (guards against calibrating a non-natural
+        setpoint at the natural trim)."""
         c = pid_deeper_controller
         np.testing.assert_allclose(
             float(c.theta_ref), float(deeper_trim.state[1]), atol=1e-12
@@ -594,7 +594,8 @@ class TestTrimAtSetpoint:
 
     def test_pid_natural_calibration_unchanged(self, lqr_design):
         """target_pos_d=None keeps the natural-trim calibration (regression:
-        pid_natural and mechanical rows must not move due to C2.C2)."""
+        the natural-setpoint controllers must not move when the per-setpoint
+        calibration path is present but unused)."""
         _, _, c = create_pid_wand_config(
             lqr_design, params=MOTH_BIEKER_V3, heel_angle=_HEEL_30, dt=0.005,
         )

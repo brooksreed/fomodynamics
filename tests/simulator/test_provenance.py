@@ -1,4 +1,4 @@
-"""Tests for fmd_commit/install_mode/params_hash provenance stamping (C1.H)."""
+"""Tests for fmd_commit/install_mode/params_hash provenance stamping."""
 
 import json
 

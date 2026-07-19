@@ -27,6 +27,7 @@ docs/reports/wand_vs_pid_waves/
     ├── dashboard_mechanical.png
     ├── dashboard_pid_natural.png
     ├── dashboard_pid_deeper.png
+    ├── dashboard_p_tuned.png
     ├── compare_ride_height.png
     ├── compare_flap_command.png
     ├── compare_wand_angle.png
@@ -56,7 +57,8 @@ Key fields:
 
 - `provenance` — fmd commit, install mode (editable vs pinned), params
   hash. Quote it in the report header; an `editable` install mode means
-  a pre-merge branch vintage.
+  the artifacts were generated from a working tree rather than a pinned
+  release.
 - `setup` — trim state, wave preset, control bounds, sim parameters,
   `thrust_law` (speed-governor Kp/u_target/per-controller T0) and
   `setpoint_trims` (each controller's own pinned trim: pos_d, theta,
@@ -92,10 +94,13 @@ never cite their agreement as independent corroboration.
 
 Controllers in `metrics.json`:
 - `mechanical` — passive linkage
-- `pid_natural` — PID at natural trim pos_d
+- `pid_natural` — PID at natural trim pos_d (Kp=0.6, Ki=0.1, Kd=0)
 - `pid_deeper` — PID with `target_pos_d = foil_tip_at_surface + 0.30 m`
   (30 cm safety margin; NED-positive-down so + makes pos_d less
   negative = boat rides lower = foil more submerged)
+- `p_tuned` — proportional-only at the natural trim (Kp=0.4, Ki=0,
+  Kd=0); same sensor/inversion/setpoint as `pid_natural`, differs only
+  in gains
 
 Sanity-check the trim values against `setup.trim_state`. A plausible
 foiling-moth trim has `pos_d` negative with magnitude of order 1 m.
@@ -103,17 +108,14 @@ Cross-check `setup.trim_state.theta_deg` (small positive pitch ≈ 1°
 is normal). Each controller's `target_pos_d_m` is stored in
 `monte_carlo.<controller>`.
 
-**Historical cross-setpoint caveat (superseded 2026-07)**: the 2026-05
-vintage showed `pid_deeper.rms_vs_target` (0.189 m) higher than
-`pid_natural` (0.091 m) and attributed it to a "theta-shift" inversion
-bias. That bias was a *speed* effect (the pre-fix plant had no surge
-equilibrium; the deeper config decelerated ~4.6 m/s and pitched up
-~3°). On the governed plant with per-setpoint trim calibration the
-ordering **reversed**: pid_deeper now has the lowest RMS vs its own
-setpoint (0.079 vs 0.093 mechanical / 0.103 pid_natural in the 2026-07
-50-seed run). If you see a large (>2 cm) mean offset between any
-controller's `ride_height_mean` and its `target_pos_d_m`, flag it —
-it is no longer an accepted limitation.
+**Cross-setpoint calibration check**: each controller is calibrated at
+the pinned trim of its own setpoint (theta_ref, flap, elevator, thrust
+T0 solved there), and at equal speed the trim pitch is nearly
+depth-invariant, so every controller should reach its own setpoint with
+a mm-level calm bias regardless of ride height. If you see a large
+(>2 cm) mean offset between any controller's `ride_height_mean` and its
+`target_pos_d_m`, flag it — it is a calibration regression, not an
+accepted limitation.
 
 ### Step 3: Read `report_guidelines.txt`
 
@@ -138,10 +140,11 @@ For every PNG in `plots/`, write a section in `report.md` describing:
 
 Group plots logically:
 
-- **Single seed (seed=0)**: three dashboards (`dashboard_mechanical.png`,
-  `dashboard_pid_natural.png`, `dashboard_pid_deeper.png`) and three
-  comparison overlays. Discuss the time-series behaviour, phase
-  relationship with wave forcing, controller saturation events.
+- **Single seed (seed=0)**: four dashboards (`dashboard_mechanical.png`,
+  `dashboard_pid_natural.png`, `dashboard_pid_deeper.png`,
+  `dashboard_p_tuned.png`) and three comparison overlays. Discuss the
+  time-series behaviour, phase relationship with wave forcing, controller
+  saturation events.
 - **Monte Carlo (50 seeds)**: `mc_*.png`. Discuss the distribution
   spread, paired comparison, outliers. Use `mc_ride_height_rms_around_target.png`
   (not `mc_ride_height_rms.png`) when comparing cross-setpoint tracking quality.
@@ -175,8 +178,8 @@ Suggested structure (mirrors `recipe.md` § "Report structure"):
 # wand_vs_pid_waves — report (regenerated <date>)
 
 ## Flagged findings (read first)
-- (anything from § "What to flag"; orderings that changed vs the
-  previous committed vintage)
+- (anything from § "What to flag"; any ordering that violates the
+  mechanism expectations in `report_guidelines.txt`)
 
 ## Summary
 - (3-5 bullets, lead with headline RMS / breach numbers)
@@ -187,7 +190,7 @@ Suggested structure (mirrors `recipe.md` § "Report structure"):
 
 ## Single-seed time series (seed=0)
 - Walk through dashboard_mechanical.png, dashboard_pid_natural.png,
-  dashboard_pid_deeper.png.
+  dashboard_pid_deeper.png, dashboard_p_tuned.png.
 - Walk through compare_ride_height.png, compare_flap_command.png,
   compare_wand_angle.png.
 
@@ -199,16 +202,14 @@ Suggested structure (mirrors `recipe.md` § "Report structure"):
 - mc_pitch_speed.png — pitch RMS and speed-loss distributions.
 - surge_psd.png — governor/wave band separation.
 
-## Reconciliation (only when regenerating after a model/physics change)
-- Diff the headline numbers against the previous committed
-  metrics.json (`git show <old-commit>:docs/reports/.../metrics.json`).
-- State explicitly: which claims survived, which numbers moved (and
-  why), which orderings flipped.
-
 ## Mechanism
 - Which controller wins tracking, and why? (Compare the linkage's
-  geometric gain and zero lag vs the PID's Kp and integrator; check
-  each controller's ride_height_mean against its own target.)
+  geometric gain and zero lag, the PID's Kp and integrator, and the
+  proportional-only controller's soft gain; check each controller's
+  ride_height_mean against its own target. On a wand-derived height
+  sensor the integrator can *inject* wave-group-band variance by
+  servoing the inversion's wave-rectified bias — compare pid_natural
+  and p_tuned, which differ only in gains.)
 - Why is it different on breaches/saturation? Inspect the
   ride_height_mean values to compare steady-state setpoints —
   a controller that tracks trim exactly may breach more if the
@@ -266,7 +267,8 @@ Suggested structure (mirrors `recipe.md` § "Report structure"):
   It models "sailor holds boatspeed", giving every configuration a
   surge equilibrium. The calibrated thrust *table* is a required-thrust
   curve, not a control law — used directly as the dynamic law it has
-  zero surge stiffness and u drifts (the pre-2026-07 vintage's defect).
+  zero surge stiffness (dF/du = 0 along the trim manifold), so u has no
+  restoring force and drifts.
 
 ## What to flag (do **not** silently accept)
 
@@ -283,18 +285,22 @@ report instead of (or in addition to) the headline summary:
   averaged into "steady-state" statistics; a saturating governor breaks
   the added-resistance = Kp*mean_u_offset identity and the equal-speed
   comparison.
-- **pid_deeper breach_count ≥ pid_natural breach_count.** The whole
-  point of the deeper setpoint is to suppress breaches; the 2026-07
-  expected margin is ~2.2x fewer than the natural-setpoint controllers.
-  (mechanical vs pid_natural is expected to be a near-tie — both sit at
-  the same setpoint; a large gap between THEM is what deserves a flag.)
+- **pid_deeper breach_count ≥ any natural-setpoint controller.** The
+  whole point of the deeper setpoint is to suppress breaches, so it
+  should breach markedly less (roughly half) than the natural-setpoint
+  controllers. (mechanical, pid_natural and p_tuned all sit at the same
+  natural setpoint and should breach at similar rates — a large gap
+  among THEM is what deserves a flag.)
 - **Mean foil depth factor < 0.3 for any controller.** Foil is
   ventilating on average — wave amplitude is outside the envelope.
-- **Tracking (rms_around_target) ordering**: 2026-07 expectation is
-  pid_deeper < mechanical < pid_natural, with the mechanical-vs-PID gap
-  small (~10%). A *large* PID tracking win over mechanical (like the
-  pre-fix 2.8x) or a pid_deeper tracking *loss* would both be
-  surprising now — flag and explain rather than silently accept.
+- **Tracking (rms_around_target) ordering**: the expectation is
+  pid_deeper best (deepest foil, least surface coupling), and among the
+  natural-setpoint controllers the soft proportional-only p_tuned ~= or
+  better than the mechanical linkage, with pid_natural worst (its
+  integrator chases the wand inversion's wave-rectified bias). A *large*
+  tracking win of any controller over the others at the same setpoint,
+  or a pid_deeper tracking *loss*, would be surprising — flag and
+  explain rather than silently accept.
 - **Asymmetric saturation** (flap pinned to only one limit > 50%
   of the time). Indicates a steady bias the integrator cannot
   recover from.

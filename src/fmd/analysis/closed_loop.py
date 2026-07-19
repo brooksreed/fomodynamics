@@ -289,7 +289,7 @@ def compute_extended_metrics(
 
 
 # ---------------------------------------------------------------------------
-# Stationarity (C2.C0)
+# Stationarity
 # ---------------------------------------------------------------------------
 
 def compute_signal_drift(signal: np.ndarray, dt: float) -> tuple[float, float]:
@@ -318,13 +318,13 @@ def compute_stationarity(
     u_drift_tol: float = 0.5,
     pos_d_drift_tol: float = 0.05,
 ) -> dict:
-    """Pass/fail stationarity of a steady-state window (C2.C0).
+    """Pass/fail stationarity of a steady-state window.
 
     A run is *stationary* if neither forward speed ``u`` nor ride height
     ``pos_d`` drifts more than its tolerance across the window (least-squares
-    trend). This exists because the C2.B study averaged a decaying surge
+    trend). It guards against averaging a decaying (non-equilibrium) surge
     transient as if it were a steady state — a non-stationary run must never
-    again be reported as a steady mean.
+    be reported as a steady mean.
 
     Args:
         u, pos_d: 1-D windowed time series (already sliced to the metrics

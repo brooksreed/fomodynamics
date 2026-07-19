@@ -77,13 +77,14 @@ N_SEEDS_QUICK = 5
 SINGLE_SEED = 0
 STEADY_START = 10.0       # s — skip the first 10s for steady-state stats
 
-# --- P speed-governor ("sailor model"), C2.C0 -------------------------------
-# The calibrated thrust table is a required-thrust curve with zero surge
-# stiffness (the C2.B runaway). The dynamic thrust law is instead a P
-# governor F = T0 + Kp*(u_target - u), realised via MothSailForce's affine
-# mode (see apply_speed_governor / thrust_governor_design.md). Each
-# controller uses its own pinned-trim T0 at its ride-height setpoint; all
-# share one boatspeed target for an equal-speed comparison.
+# --- P speed-governor ("sailor model") --------------------------------------
+# The calibrated thrust table is a required-thrust curve: evaluated as the
+# dynamic thrust law it has zero surge stiffness (dF/du = 0 along the trim
+# manifold), so u has no restoring force and drifts. The dynamic thrust law
+# is instead a P governor F = T0 + Kp*(u_target - u), realised via
+# MothSailForce's affine mode (see apply_speed_governor). Each controller
+# uses its own pinned-trim T0 at its ride-height setpoint; all share one
+# boatspeed target for an equal-speed comparison.
 U_TARGET = U_FORWARD      # m/s — common boatspeed target for all controllers
 KP_GOVERNOR = 40.0        # N/(m/s) — nominal gain (bandwidth separation:
                           # pole Kp/m ~0.33 rad/s, ~20x below encounter ~6.5)
@@ -356,7 +357,7 @@ def _deeper_pinned_trim():
     Single source for pid_deeper's own trim: the governor T0, the PID's
     per-setpoint calibration (``setpoint_trim``), the own-trim initial
     state, and the flap-metric reference all read this cached solve, so
-    they are bit-consistent by construction (C2.C2 trim-at-setpoint).
+    they are bit-consistent by construction.
     """
     target_pos_d = float(compute_tip_at_surface_pos_d() + PID_DEEPER_MARGIN_M)
     return find_moth_trim(
@@ -395,13 +396,14 @@ def _build_plant(controller_kind: str, *, lqr, kp: float, captive: bool):
     """Build the Moth3D plant for one controller.
 
     Primary regime (``captive=False``): surge dynamic + P speed-governor sail
-    so the boat holds ``U_TARGET`` in waves (surge equilibrium — the C2.C0
-    fix). Captive regime (``captive=True``): ``surge_enabled=False``, a
-    towing-tank diagnostic that prescribes u and drops surge-wave coupling —
-    the calibrated table sail is left in place (no governor without live u).
+    so the boat holds ``U_TARGET`` in waves (surge equilibrium). Captive
+    regime (``captive=True``): ``surge_enabled=False``, a towing-tank
+    diagnostic that prescribes u and drops surge-wave coupling — the
+    calibrated table sail is left in place (no governor without live u).
 
-    Both build with ``enable_encounter_distance=True`` (ENC-DIST, C1.C) and
-    fail loud if that ever silently reverts (the C2.D landmine).
+    Both build with ``enable_encounter_distance=True`` so the wave-aware
+    breach metric reads the foil's *integrated* encounter position, and
+    fail loud if that ever silently reverts to the naive ``u·t`` fallback.
     """
     moth = Moth3D(
         MOTH_BIEKER_V3,
@@ -413,7 +415,8 @@ def _build_plant(controller_kind: str, *, lqr, kp: float, captive: bool):
     if not moth.enable_encounter_distance:
         raise ValueError(
             "wand_vs_pid_waves requires enable_encounter_distance=True "
-            "(ENC-DIST, C1.C) — got False."
+            "(integrated encounter position for the wave-aware breach "
+            "metric) — got False."
         )
     if captive:
         return moth
@@ -454,11 +457,10 @@ def _build_controller_for_kind(
         # foil keeps a safety margin against ventilation under SF Bay
         # moderate waves.  In NED, "deeper" means a MORE POSITIVE pos_d
         # (less negative altitude), so we ADD the margin to the
-        # tip-at-surface pos_d, not subtract.  The plan write-up has the
-        # sign inverted; we flip it here.
-        # Calibrated at its OWN pinned trim (C2.C2 trim-at-setpoint);
-        # the shared cached solve keeps it bit-consistent with the
-        # governor T0 and the own-trim initial state.
+        # tip-at-surface pos_d, not subtract.
+        # Calibrated at its OWN pinned trim; the shared cached solve keeps
+        # it bit-consistent with the governor T0 and the own-trim initial
+        # state.
         target_pos_d = compute_tip_at_surface_pos_d() + PID_DEEPER_MARGIN_M
         return create_pid_wand_config(
             lqr, params=MOTH_BIEKER_V3, heel_angle=HEEL_ANGLE, dt=DT,
@@ -488,8 +490,8 @@ def run_single_seed(lqr, *, controller_kind: str, wave_seed: int,
         encounter_distance_index=moth.x_n_index, num_states=moth.num_states,
     )
 
-    # Own-trim initialization (C2.C2): each controller starts at ITS OWN
-    # trim (pid_deeper at the deeper pinned trim), so no wind-toward-target
+    # Own-trim initialization: each controller starts at ITS OWN trim
+    # (pid_deeper at the deeper pinned trim), so no wind-toward-target
     # transient pollutes the early record. u_prev init = own trim control.
     setpoint_trim = _setpoint_trim_for_kind(controller_kind, lqr=lqr)
     trim_state = jnp.array(setpoint_trim.state)
@@ -542,7 +544,7 @@ def run_monte_carlo(lqr, *, controller_kind: str, n_seeds: int,
         encounter_distance_index=moth.x_n_index, num_states=moth.num_states,
     )
 
-    # Own-trim initialization (C2.C2) — see run_single_seed.
+    # Own-trim initialization — see run_single_seed.
     setpoint_trim = _setpoint_trim_for_kind(controller_kind, lqr=lqr)
     trim_state = jnp.array(setpoint_trim.state)
     # See run_single_seed: x0_est must match the plant's num_states.
@@ -615,8 +617,8 @@ def _wave_eta_main_per_seed(
     Mirrors the elevation query inside ``Moth3D.compute_aux``: the main
     foil's NED north position is ``x_n + eff_x * cos(theta) + eff_z *
     sin(theta)``, where ``x_n`` is the plant's integrated encounter
-    distance state (ENC-DIST, C1.C) — ``∫(u·cosθ + w·sinθ) dt`` — not the
-    naive ``u(t) * t`` approximation. The surface elevation at that point
+    distance state — ``∫(u·cosθ + w·sinθ) dt`` — not the naive
+    ``u(t) * t`` approximation. The surface elevation at that point
     + time is the wave-aware reference for the breach metric. Requires
     the plant to have been built with ``enable_encounter_distance=True``
     (see ``run_single_seed`` / ``run_monte_carlo``).
@@ -696,12 +698,10 @@ def aggregate_mc(result, *, trim_state: np.ndarray, trim_control: np.ndarray,
             ``None``, falls back to ``trim_state[0]`` so the metric
             equals ``ride_height_rms`` by construction.
         setpoint_control: Optional control vector of the controller's OWN
-            setpoint trim (C2.C2). When provided, ``flap_rms`` measures
-            deviation from the OWN trim flap — for pid_deeper this
-            changes the metric's reference vs the pre-C2.C2 vintage
-            (which referenced the natural-trim flap); the shift equals
-            the flap-trim delta (~0.07 deg). ``None`` falls back to
-            ``trim_control[0]``.
+            setpoint trim. When provided, ``flap_rms`` measures deviation
+            from the OWN trim flap — for pid_deeper this differs from the
+            natural-trim flap by the flap-trim delta (~0.07 deg). ``None``
+            falls back to ``trim_control[0]``.
     """
     true_states = np.asarray(result.true_states[:, 1:, :])    # (N, T, n)
     controls = np.asarray(result.controls)                    # (N, T, m)
@@ -714,7 +714,7 @@ def aggregate_mc(result, *, trim_state: np.ndarray, trim_control: np.ndarray,
     u_fwd = true_states[:, :, 4]
 
     # Flap-activity reference: the controller's OWN trim flap when a
-    # setpoint control is supplied (C2.C2), else the natural trim flap.
+    # setpoint control is supplied, else the natural trim flap.
     flap_trim = (
         float(setpoint_control[0]) if setpoint_control is not None
         else float(trim_control[0])
@@ -740,7 +740,7 @@ def aggregate_mc(result, *, trim_state: np.ndarray, trim_control: np.ndarray,
         "flap_saturation_fraction": [],
         "pitch_rms_error": [],
         "speed_loss_mean": [],
-        # C2.C0 governor standard outputs
+        # Speed-governor standard outputs
         "added_resistance_mean": [],       # mean ΔT = F_sail − T0 (N)
         "mean_u_offset": [],               # u_target − mean(u) (m/s)
         "governor_saturation_fraction": [],  # frac of steps with F_sail clamped to 0
@@ -802,7 +802,7 @@ def aggregate_mc(result, *, trim_state: np.ndarray, trim_control: np.ndarray,
             float(float(trim_state[4]) - np.mean(u_k[ss_idx:]))
         )
 
-        # --- C2.C0 governor standard outputs ---
+        # --- speed-governor standard outputs ---
         u_ss = u_k[ss_idx:]
         # Mean-u offset: the part the P governor doesn't close (= ΔT/Kp).
         per_seed["mean_u_offset"].append(float(u_target - np.mean(u_ss)))
@@ -1206,8 +1206,9 @@ def main():
     # 7. metrics.json
     payload = {
         # Provenance: which fmd produced this artifact (fmd_commit +
-        # install_mode + params_hash). editable/unmerged while the study
-        # branch is open; becomes a pinned vintage at the C2.F merge.
+        # install_mode + params_hash). An "editable" install_mode means the
+        # artifact was generated from a working tree rather than a pinned
+        # release.
         "provenance": provenance_stamp(MOTH_BIEKER_V3),
         "setup": {
             "u_forward_ms": U_FORWARD,
@@ -1241,15 +1242,14 @@ def main():
                 "thrust0_N": _to_jsonable(governor_t0),
                 "note": (
                     "F_sail = max(T0 + Kp*(u_target - u), 0) via MothSailForce "
-                    "affine mode (C2.C0); T0 = pinned-trim thrust at each "
+                    "affine mode; T0 = pinned-trim thrust at each "
                     "controller's setpoint. Captive: surge_enabled=False, "
                     "calibrated table sail, fixed u."
                 ),
             },
-            # C2.C2 trim-at-setpoint: each controller's OWN trim (its
-            # calibration + initialization point). flap_rms is referenced
-            # to the own-trim flap — for pid_deeper this differs from the
-            # pre-C2.C2 vintage (natural-trim flap reference).
+            # Each controller's OWN trim (its calibration + initialization
+            # point). flap_rms is referenced to the own-trim flap — for
+            # pid_deeper this differs from the natural-trim flap reference.
             "setpoint_trims": {
                 kind: (lambda st: {
                     "pos_d_m": float(st.state[0]),
@@ -1307,7 +1307,8 @@ def main():
             f"speed_loss={a['speed_loss_mean']['mean']:.3f}m/s "
             f"depth_factor_mean={a['depth_factor_mean']['mean']:.3f}"
         )
-    # C2.C0 governor + stationarity readout (the point of this chunk).
+    # Governor + stationarity readout (confirms every run reached a
+    # steady surge equilibrium under the P governor).
     print("\n--- governor / stationarity (steady-state) ---")
     for kind in CONTROLLERS:
         a = mc_agg[kind]

@@ -245,22 +245,21 @@ from fmd.simulator.components.moth_forces import compute_tip_at_surface_pos_d  #
 
 
 # ---------------------------------------------------------------------------
-# Speed-governor sail factory (C2.C0)
+# Speed-governor sail factory
 # ---------------------------------------------------------------------------
 #
 # The calibrated thrust *table* is a required-thrust curve (T(u) ≡ D_calm(u)
 # along the trim manifold), so using it as the dynamic law gives zero surge
 # stiffness — any persistent drag excess in waves makes the boat slide down
-# the manifold indefinitely (the C2.B runaway). The fix is a P speed-governor
-# "sailor model":
+# the manifold indefinitely (u has no restoring force). A P speed-governor
+# "sailor model" supplies that stiffness:
 #
 #     F_sail = T0 + Kp * (u_target - u)
 #
 # realised through the existing affine ``MothSailForce`` mode with
 # ``thrust_coeff = T0 + Kp*u_target`` and ``thrust_slope = -Kp`` (no new model
 # surface). With ``surge_enabled=True`` the sail is fed the live state speed
-# ``u``, so this is exactly the governor. See
-# ``docs/private/plans/wand_vs_pid_waves/thrust_governor_design.md`` (in blur).
+# ``u``, so this is exactly the governor.
 
 
 def governor_thrust0(
@@ -275,8 +274,8 @@ def governor_thrust0(
     T0 is the calm-water thrust that closes the trim equilibrium at
     ``(target_pos_d, u_target)`` — the governor's operating point. ΔT(t) =
     F_sail − T0 then isolates the wave added resistance. Uses the same pinned
-    CasADi trim solve as calibration/LQR (C1.E/C1.G machinery), so it is
-    single-branch and consistent with ``design_moth_lqr``'s trim.
+    CasADi trim solve as calibration/LQR, so it is single-branch and
+    consistent with ``design_moth_lqr``'s trim.
 
     Note: for the natural-trim controllers the caller should prefer reading
     ``lqr.trim.thrust`` directly (bit-consistent with the LQR design point);
@@ -505,7 +504,7 @@ def _build_wand_sensor_and_passthrough(
         params: MothParams for geometry.
         heel_angle: Static heel angle (rad).
         encounter_distance_index: Optional state index of the plant's
-            integrated encounter distance x_n (ENC-DIST, C1.C). When set,
+            integrated encounter distance x_n. When set,
             the wand sensor reads the true encounter position from state
             instead of the constant-speed ``fwd_speed_func(t)·t``
             estimate. ``None`` (default) preserves the old behaviour —
@@ -562,18 +561,15 @@ def create_mechanical_wand_config(
     + MechanicalWandController. The wand angle is mechanically linked
     to the flap; elevator is held at trim.
 
-    **Pullrod auto-tune (C2.C2)**: unless ``pullrod_offset`` is given in
+    **Pullrod auto-tune**: unless ``pullrod_offset`` is given in
     ``linkage_overrides``, the ride-height adjuster is tuned in closed
     form at the LQR trim — ``WandLinkage.required_pullrod_offset`` sets
     the offset so the linkage outputs exactly the trim flap at the trim
     wand angle (hull-frame, from ``wand_angle_from_state``). The trim
     point is then an exact equilibrium of the calm-water closed loop
-    (given trim thrust, e.g. the speed governor's T0). This replaces the
-    historical hand-tuned constant ``0.005 m``, which was calibrated
-    against the pre-C1.D world-frame wand convention and left a ~1.6 cm
-    calm-water ride-height offset on the corrected physics (measured
-    C2.C1). Auto-tuning from the live trim also removes the
-    stale-constant failure mode for other presets / heels / speeds.
+    (given trim thrust, e.g. the speed governor's T0). Auto-tuning from
+    the live trim keeps the linkage calibrated for any preset / heel /
+    speed, rather than relying on a hand-tuned offset constant.
     Wave-induced steady-state bias (wave rectification through the
     linkage's trig nonlinearity) is a separate dynamic effect and is
     *not* affected by this static calibration.
@@ -588,7 +584,7 @@ def create_mechanical_wand_config(
             above); other overridden linkage fields are respected by the
             auto-tune (the inversion runs on the overridden chain).
         encounter_distance_index: Optional state index of the plant's
-            integrated encounter distance x_n (ENC-DIST, C1.C), forwarded
+            integrated encounter distance x_n, forwarded
             to the ``WandSensor``. ``None`` (default) preserves the old
             constant-speed ``u·t`` estimate.
         num_states: Pseudo-state length for the ``PassthroughEstimator``;
@@ -686,10 +682,10 @@ def create_pid_wand_config(
     ``estimate_pos_d(wand_angle_from_state(pos_d, theta_ref, heel)) == pos_d``
     holds for ANY pos_d.
 
-    **Per-setpoint calibration (trim-at-setpoint workflow, C2.C2 /
-    Option D)**: the controller is calibrated at its OWN trim point —
-    the pinned trim at ``target_pos_d`` when a setpoint override is
-    given, the LQR's natural trim otherwise. ``theta_ref``,
+    **Per-setpoint calibration (trim-at-setpoint workflow)**: the
+    controller is calibrated at its OWN trim point — the pinned trim at
+    ``target_pos_d`` when a setpoint override is given, the LQR's natural
+    trim otherwise. ``theta_ref``,
     ``flap_trim``, ``elevator_trim``, and the ``wand_angle_offset``
     anchor all come from that trim, so the setpoint is an exact calm
     equilibrium of the closed loop by construction (zero steady-state
@@ -728,7 +724,7 @@ def create_pid_wand_config(
             governor's T0) to guarantee bit-consistency and skip a solve.
             Its pinned ``state[0]`` must match ``target_pos_d``.
         encounter_distance_index: Optional state index of the plant's
-            integrated encounter distance x_n (ENC-DIST, C1.C), forwarded
+            integrated encounter distance x_n, forwarded
             to the ``WandSensor``. ``None`` (default) preserves the old
             constant-speed ``u·t`` estimate.
         num_states: Pseudo-state length for the ``PassthroughEstimator``;

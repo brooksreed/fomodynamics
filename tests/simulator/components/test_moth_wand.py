@@ -317,7 +317,7 @@ class TestWandLinkage:
 # ---------------------------------------------------------------------------
 
 class TestRequiredPullrodOffset:
-    """Tests for the closed-form pullrod-offset inversion (C2.C2).
+    """Tests for the closed-form pullrod-offset inversion.
 
     ``required_pullrod_offset`` is the ride-height-adjuster tuning used by
     ``create_mechanical_wand_config`` to make the trim point an exact calm

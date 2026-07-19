@@ -1,17 +1,15 @@
-"""Directional + regression tests for the C2.C0 P speed-governor sail.
+"""Directional + regression tests for the P speed-governor sail.
 
 The governor replaces the calibrated thrust *table* (a required-thrust curve
-with zero surge stiffness — the C2.B runaway) with an affine "sailor model"
+with zero surge stiffness) with an affine "sailor model"
 ``F_sail = T0 + Kp*(u_target - u)``. These tests lock:
 
   (i)   governor sign — u below target => thrust above T0 (and vice-versa);
   (ii)  surge-stiffness regression — the sail's df/du flips from POSITIVE
-        (table, the bug) to NEGATIVE (=-Kp, restoring), isolating the
-        discovered null-stiffness bug class;
+        (the table, which is positive surge feedback) to NEGATIVE (=-Kp,
+        restoring), isolating the null-stiffness bug class;
   (iii) a calm-water governed sim actually holds u_target (no droop);
   (iv)  the construction guards (surge required, Kp>0).
-
-Design: docs/private/plans/wand_vs_pid_waves/thrust_governor_design.md (blur).
 """
 
 from fmd.simulator import _config  # noqa: F401
@@ -80,7 +78,7 @@ def test_governor_sign_below_and_above_target(lqr, trim_state):
 
 
 # ---------------------------------------------------------------------------
-# (ii) Surge-stiffness regression lock (the C2.B null-stiffness bug class)
+# (ii) Surge-stiffness regression lock (the null-stiffness bug class)
 # ---------------------------------------------------------------------------
 
 
@@ -90,7 +88,7 @@ def test_surge_stiffness_sign_flip_table_vs_governor(lqr, trim_state):
 
     Computed directly on the sail element (theta fixed), so it isolates the
     thrust law from the full dynamics and is mirror-independent. This is the
-    permanent lock on the discovered null-/negative-stiffness bug class.
+    permanent lock on the null-/negative-stiffness bug class.
     """
     T0 = float(lqr.trim.thrust)
     table_moth = Moth3D(MOTH_BIEKER_V3, u_forward=ConstantSchedule(U_TARGET),
@@ -110,7 +108,7 @@ def test_surge_stiffness_sign_flip_table_vs_governor(lqr, trim_state):
 
     assert table_slope > 1.0, (
         f"calibrated table thrust rises with u (df/du={table_slope:.3f}>0) — "
-        "positive surge feedback, the root cause of the C2.B runaway"
+        "positive surge feedback, the root cause of the runaway"
     )
     assert gov_slope < 0.0, f"governor must restore (df/du<0); got {gov_slope:.3f}"
     assert gov_slope == pytest.approx(-KP, abs=1e-2)
@@ -190,13 +188,13 @@ def test_apply_speed_governor_requires_positive_kp(lqr):
 
 
 # ---------------------------------------------------------------------------
-# Stationarity metric unit test (C2.C0 standard output)
+# Stationarity metric unit test
 # ---------------------------------------------------------------------------
 
 
 def test_stationarity_metric_flags_decay_and_passes_steady():
-    """A monotonic surge decay (the C2.B runaway) must fail stationarity; a
-    flat-with-ripple window must pass."""
+    """A monotonic surge decay (a non-equilibrium runaway) must fail
+    stationarity; a flat-with-ripple window must pass."""
     from fmd.analysis.closed_loop import compute_signal_drift, compute_stationarity
 
     dt = 0.005

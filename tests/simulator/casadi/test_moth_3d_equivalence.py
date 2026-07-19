@@ -696,7 +696,7 @@ class TestMoth3DExtendedRegimeEquivalence:
 
 
 class TestMoth3DFreeSurfaceLiftEquivalence:
-    """C1.F: parity for the FSL knobs (enable_free_surface_lift,
+    """Parity for the free-surface-lift knobs (enable_free_surface_lift,
     ventilation_sharpness) in both settings.
 
     The default-ON case is covered by every test above; these lock the
@@ -772,11 +772,11 @@ class TestMoth3DFreeSurfaceLiftEquivalence:
 
 
 class TestMoth3DSpeedGovernorEquivalence:
-    """C2.C0: parity for the affine speed-governor sail (empty thrust table,
+    """Parity for the affine speed-governor sail (empty thrust table,
     thrust_slope = -Kp), including the F_sail >= 0 clamp.
 
     The default MOTH_BIEKER_V3 uses the calibrated thrust *table*, so the
-    affine branch — and its new max(.,0) clamp — is never exercised by the
+    affine branch — and its max(.,0) clamp — is never exercised by the
     tests above. This locks the JAX and CasADi affine branches in lockstep,
     driving u past the governor's zero-thrust kink so the clamp actually
     binds in both mirrors.
