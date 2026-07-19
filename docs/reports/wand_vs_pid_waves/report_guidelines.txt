@@ -13,7 +13,7 @@
   still-water-referenced. Do not mix the two.
 
 ### What this report compares
-Three controllers, each calibrated and initialized at its OWN pinned
+Four controllers, each calibrated and initialized at its OWN pinned
 trim, under a P speed governor (F = max(T0 + Kp*(u_target - u), 0);
 T0 = pinned-trim thrust at each controller's setpoint):
 - ``mechanical``: WandSensor + PassthroughEstimator +
@@ -23,26 +23,40 @@ T0 = pinned-trim thrust at each controller's setpoint):
   offset is auto-tuned closed-form so the trim is its exact calm
   equilibrium.
 - ``pid_natural``: WandSensor + PassthroughEstimator + PIDController
-  at the natural trim setpoint. The wand angle is inverted to a
-  closed-form ride-height estimate (theta_ref = trim pitch) and fed
-  through PID(Kp, Ki, Kd) on height error. Integrator gives zero
-  steady-state offset under bias.
-- ``pid_deeper``: same PID with target_pos_d 30 cm below the foil-tip
-  ventilation threshold, calibrated at the pinned trim of ITS OWN
-  setpoint (theta_ref, flap, elevator, thrust T0 all re-solved there).
+  at the natural trim setpoint, default gains (Kp=0.6, Ki=0.1, Kd=0).
+  The wand angle is inverted to a closed-form ride-height estimate
+  (theta_ref = trim pitch) and fed through PID on height error. The
+  integrator drives zero steady-state offset under a constant bias.
+- ``pid_deeper``: same PID (default gains) with target_pos_d 30 cm
+  below the foil-tip ventilation threshold, calibrated at the pinned
+  trim of ITS OWN setpoint (theta_ref, flap, elevator, thrust T0 all
+  re-solved there).
+- ``p_tuned``: same wand sensor/inversion as pid_natural, same natural
+  setpoint and own-trim calibration, but proportional-only at a softer
+  gain (Kp=0.4, Ki=0, Kd=0). Isolates the effect of removing the
+  integrator on a relative (wand-derived) height sensor: the ONLY
+  difference from pid_natural is the (Kp, Ki) gains.
 
-### Expected qualitative differences (post-2026-07 physics)
-- Breach count is dominated by the SETPOINT, not the control law:
-  the two natural-setpoint controllers (mechanical, pid_natural)
-  should breach at statistically similar rates (~once per wave
-  encounter at Hs=0.5 m); pid_deeper should breach ~2x less.
-- Wave-band ride-height RMS should be similar for mechanical and
-  pid_natural (the passive linkage's stiffer geometric gain can beat
-  a soft PID by ~10%); pid_deeper should track its own setpoint best
-  (foil deep -> lift insensitive to surface proximity).
+### Expected qualitative differences (mechanisms, not conclusions)
+- Breach count is dominated by the SETPOINT, not the control law: the
+  three natural-setpoint controllers (mechanical, pid_natural,
+  p_tuned) should breach at statistically similar rates (roughly once
+  per wave encounter at Hs=0.5 m); pid_deeper, with its foil tip well
+  below the surface, should breach markedly less.
+- On a RELATIVE (wand-derived) height sensor the wand inversion's
+  height estimate is biased under waves (theta != theta_ref aliasing +
+  rectification). An integrator (pid_natural) then servoes the true
+  height toward that wave-rectified estimate, which is expected to COST
+  wave-band tracking RMS rather than help it — so p_tuned (no
+  integrator) should track ~= or BETTER than pid_natural, and at a soft
+  Kp should track ~= or better than the mechanical linkage at markedly
+  LOWER flap effort (fewer saturation events). pid_deeper should track
+  its own setpoint best (foil deep -> lift insensitive to surface
+  proximity).
 - Mechanical should have the HIGHEST flap activity, saturation
   fraction, and added resistance (wave-orbital wand motion passes
-  straight through the linkage).
+  straight through the linkage); the softest controller (p_tuned)
+  should have the lowest.
 - All controllers should be stationary (stationarity_pass_fraction =
   1.0) with the governor unsaturated; mean-u offsets are the P-droop
   ΔT/Kp, well under 0.3 m/s.
@@ -77,9 +91,9 @@ T0 = pinned-trim thrust at each controller's setpoint):
   cm-level wave rectification is expected).
 - Any seed with stationarity_passed = 0, or a nonzero governor
   saturation fraction.
-- pid_deeper breach_count >= pid_natural breach_count, or a LARGE
-  breach gap between mechanical and pid_natural (they share a
-  setpoint and should be close).
+- pid_deeper breach_count >= any natural-setpoint controller, or a
+  LARGE breach gap among mechanical / pid_natural / p_tuned (they
+  share a setpoint and should be close).
 - If mean foil tip depth < 0, controllers are flying off the foil on
   average — the wave amplitude is too large for the wand envelope.
 - Asymmetric saturation (flap pinned to one limit) indicates a
