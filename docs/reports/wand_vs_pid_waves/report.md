@@ -114,7 +114,8 @@ Controllers — **each calibrated and initialized at its own pinned trim**
   setpoint = natural trim −1.400 m; inversion θ_ref = trim pitch.
 - **pid_deeper** (`create_pid_wand_config`, `target_pos_d = −1.169 m` =
   `compute_tip_at_surface_pos_d() + 0.30`; NED: +0.30 makes pos_d less negative →
-  boat rides 30 cm lower → foil tip 30 cm below the ventilation threshold).
+  boat rides 23 cm lower → foil tip 30 cm below the ventilation threshold, vs
+  7 cm at natural trim).
   Calibrated at its own pinned trim: θ_ref = 0.824°, flap = −0.064°, elevator =
   +0.061°, T0 = 91.88 N.
 - **p_tuned** (`create_pid_wand_config`, Kp = 0.4, Ki = 0, Kd = 0): same wand
