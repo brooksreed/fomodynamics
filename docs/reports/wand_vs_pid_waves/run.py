@@ -97,9 +97,10 @@ PID_DEEPER_MARGIN_M = 0.30
 
 # Tuned P controller: proportional-only feedback at the natural trim, at a
 # softer gain than the default PID. Selected from a paired-seed gain sweep
-# at Ki = 0 on this exact setup (soft side of a shallow tracking plateau);
-# isolates the effect of dropping the integrator on a relative (wand)
-# height sensor.
+# at Ki = 0 on this exact setup: tracking is nearly flat in stiffness
+# (Kp 0.2-1.5 spans ~8% in RMS, shallow optimum at Kp ~ 0.3-0.4), so 0.4
+# sits on the soft side of the plateau. See recipe.md. Isolates the effect
+# of dropping the integrator on a relative (wand) height sensor.
 P_TUNED_KP = 0.4
 P_TUNED_KI = 0.0
 P_TUNED_KD = 0.0

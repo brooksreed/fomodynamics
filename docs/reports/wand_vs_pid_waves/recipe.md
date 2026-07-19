@@ -35,9 +35,13 @@ clone, re-run, and tweak as a starting point for their own tuning.
     proportional-only controller at the natural trim. Same wand sensor,
     inversion, setpoint, and own-trim calibration as the natural-trim
     PID; the only change is the gains. Kp comes from a paired-seed gain
-    sweep at Ki = 0 on this exact setup (soft side of a shallow tracking
-    plateau); with Ki = 0 it does not chase the wand inversion's
-    wave-rectified height bias, so it tracks well at low flap effort.
+    sweep at Ki = 0 on this exact setup: tracking is nearly flat in
+    stiffness (Kp 0.2–1.5 spans ~8 % in RMS) with a shallow optimum at
+    Kp ≈ 0.3–0.4, and stiffening 0.6 → 0.844 *worsens* tracking by
+    2.1 mm — at Hs = 0.5 m the residual is disturbance-dominated, so
+    Kp = 0.4 sits on the soft side of that plateau. With Ki = 0 it does
+    not chase the wand inversion's wave-rectified height bias, so it
+    tracks well at low flap effort.
 - Thrust: **P speed governor** (`apply_speed_governor`) —
   `F = max(T0 + Kp*(u_target - u), 0)`, Kp = 40 N/(m/s), u_target = 10;
   T0 = pinned-trim thrust at each controller's own setpoint (75.5 N

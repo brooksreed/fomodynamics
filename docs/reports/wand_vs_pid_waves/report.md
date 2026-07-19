@@ -52,9 +52,10 @@ target.
 ## Summary
 
 - **Safety (foil-tip breaches, 50-s window):** pid_deeper 28.4 ± 3.1, then a
-  three-way tie at the natural setpoint — mechanical 62.8 ± 2.5, p_tuned
-  63.1 ± 2.8, pid_natural 64.0 ± 2.9. Breach rate tracks the setpoint, not the
-  controller.
+  practically tied group at the natural setpoint — mechanical 62.8 ± 2.5,
+  p_tuned 63.1 ± 2.8, pid_natural 64.0 ± 2.9. The ~1-breach spread within that
+  group is resolvable under seed pairing but negligible against the 34-breach
+  setpoint effect. Breach rate tracks the setpoint, not the controller.
 - **Tracking (RMS about own setpoint):** pid_deeper 0.0792 m best; among the
   natural-setpoint three, p_tuned 0.0896 m beats mechanical 0.0926 m beats
   pid_natural 0.1029 m. The two integrator-free laws lead; the softest gain wins.
