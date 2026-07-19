@@ -94,18 +94,32 @@ KP_GOVERNOR = 40.0        # N/(m/s) — nominal gain (bandwidth separation:
 # (Hs ≈ 0.5 m, peak excursion ~0.25 m).
 PID_DEEPER_MARGIN_M = 0.30
 
+# Tuned P controller: proportional-only feedback at the natural trim, at a
+# softer gain than the default PID. Selected from a paired-seed gain sweep
+# at Ki = 0 on this exact setup (soft side of a shallow tracking plateau);
+# isolates the effect of dropping the integrator on a relative (wand)
+# height sensor.
+P_TUNED_KP = 0.4
+P_TUNED_KI = 0.0
+P_TUNED_KD = 0.0
+
 # Canonical controller list, used everywhere the plot/aggregation code
-# iterates over kinds.
-CONTROLLERS: tuple[str, ...] = ("mechanical", "pid_natural", "pid_deeper")
+# iterates over kinds. p_tuned is appended last (purely additive — its
+# presence does not perturb the other three controllers' results).
+CONTROLLERS: tuple[str, ...] = (
+    "mechanical", "pid_natural", "pid_deeper", "p_tuned",
+)
 CONTROLLER_COLORS = {
     "mechanical": "C0",
     "pid_natural": "C3",
     "pid_deeper": "C2",
+    "p_tuned": "C1",
 }
 CONTROLLER_LABELS = {
     "mechanical": "mechanical wand",
     "pid_natural": "PID (natural trim)",
     "pid_deeper": "PID (deeper trim)",
+    "p_tuned": "P (tuned, Kp=0.4)",
 }
 
 REPORT_GUIDELINES = """\
@@ -124,7 +138,7 @@ REPORT_GUIDELINES = """\
   still-water-referenced. Do not mix the two.
 
 ### What this report compares
-Three controllers, each calibrated and initialized at its OWN pinned
+Four controllers, each calibrated and initialized at its OWN pinned
 trim, under a P speed governor (F = max(T0 + Kp*(u_target - u), 0);
 T0 = pinned-trim thrust at each controller's setpoint):
 - ``mechanical``: WandSensor + PassthroughEstimator +
@@ -134,26 +148,40 @@ T0 = pinned-trim thrust at each controller's setpoint):
   offset is auto-tuned closed-form so the trim is its exact calm
   equilibrium.
 - ``pid_natural``: WandSensor + PassthroughEstimator + PIDController
-  at the natural trim setpoint. The wand angle is inverted to a
-  closed-form ride-height estimate (theta_ref = trim pitch) and fed
-  through PID(Kp, Ki, Kd) on height error. Integrator gives zero
-  steady-state offset under bias.
-- ``pid_deeper``: same PID with target_pos_d 30 cm below the foil-tip
-  ventilation threshold, calibrated at the pinned trim of ITS OWN
-  setpoint (theta_ref, flap, elevator, thrust T0 all re-solved there).
+  at the natural trim setpoint, default gains (Kp=0.6, Ki=0.1, Kd=0).
+  The wand angle is inverted to a closed-form ride-height estimate
+  (theta_ref = trim pitch) and fed through PID on height error. The
+  integrator drives zero steady-state offset under a constant bias.
+- ``pid_deeper``: same PID (default gains) with target_pos_d 30 cm
+  below the foil-tip ventilation threshold, calibrated at the pinned
+  trim of ITS OWN setpoint (theta_ref, flap, elevator, thrust T0 all
+  re-solved there).
+- ``p_tuned``: same wand sensor/inversion as pid_natural, same natural
+  setpoint and own-trim calibration, but proportional-only at a softer
+  gain (Kp=0.4, Ki=0, Kd=0). Isolates the effect of removing the
+  integrator on a relative (wand-derived) height sensor: the ONLY
+  difference from pid_natural is the (Kp, Ki) gains.
 
-### Expected qualitative differences (post-2026-07 physics)
-- Breach count is dominated by the SETPOINT, not the control law:
-  the two natural-setpoint controllers (mechanical, pid_natural)
-  should breach at statistically similar rates (~once per wave
-  encounter at Hs=0.5 m); pid_deeper should breach ~2x less.
-- Wave-band ride-height RMS should be similar for mechanical and
-  pid_natural (the passive linkage's stiffer geometric gain can beat
-  a soft PID by ~10%); pid_deeper should track its own setpoint best
-  (foil deep -> lift insensitive to surface proximity).
+### Expected qualitative differences (mechanisms, not conclusions)
+- Breach count is dominated by the SETPOINT, not the control law: the
+  three natural-setpoint controllers (mechanical, pid_natural,
+  p_tuned) should breach at statistically similar rates (roughly once
+  per wave encounter at Hs=0.5 m); pid_deeper, with its foil tip well
+  below the surface, should breach markedly less.
+- On a RELATIVE (wand-derived) height sensor the wand inversion's
+  height estimate is biased under waves (theta != theta_ref aliasing +
+  rectification). An integrator (pid_natural) then servoes the true
+  height toward that wave-rectified estimate, which is expected to COST
+  wave-band tracking RMS rather than help it — so p_tuned (no
+  integrator) should track ~= or BETTER than pid_natural, and at a soft
+  Kp should track ~= or better than the mechanical linkage at markedly
+  LOWER flap effort (fewer saturation events). pid_deeper should track
+  its own setpoint best (foil deep -> lift insensitive to surface
+  proximity).
 - Mechanical should have the HIGHEST flap activity, saturation
   fraction, and added resistance (wave-orbital wand motion passes
-  straight through the linkage).
+  straight through the linkage); the softest controller (p_tuned)
+  should have the lowest.
 - All controllers should be stationary (stationarity_pass_fraction =
   1.0) with the governor unsaturated; mean-u offsets are the P-droop
   ΔT/Kp, well under 0.3 m/s.
@@ -188,9 +216,9 @@ T0 = pinned-trim thrust at each controller's setpoint):
   cm-level wave rectification is expected).
 - Any seed with stationarity_passed = 0, or a nonzero governor
   saturation fraction.
-- pid_deeper breach_count >= pid_natural breach_count, or a LARGE
-  breach gap between mechanical and pid_natural (they share a
-  setpoint and should be close).
+- pid_deeper breach_count >= any natural-setpoint controller, or a
+  LARGE breach gap among mechanical / pid_natural / p_tuned (they
+  share a setpoint and should be close).
 - If mean foil tip depth < 0, controllers are flying off the foil on
   average — the wave amplitude is too large for the wand envelope.
 - Asymmetric saturation (flap pinned to one limit) indicates a
@@ -314,9 +342,7 @@ def _target_pos_d_for_kind(controller_kind: str, *, trim_state: np.ndarray) -> f
     - ``pid_deeper``: ``compute_tip_at_surface_pos_d() + PID_DEEPER_MARGIN_M``,
       matching the override passed into ``create_pid_wand_config``.
     """
-    if controller_kind == "mechanical":
-        return float(trim_state[0])
-    if controller_kind == "pid_natural":
+    if controller_kind in ("mechanical", "pid_natural", "p_tuned"):
         return float(trim_state[0])
     if controller_kind == "pid_deeper":
         return float(compute_tip_at_surface_pos_d() + PID_DEEPER_MARGIN_M)
@@ -342,12 +368,12 @@ def _deeper_pinned_trim():
 def _setpoint_trim_for_kind(controller_kind: str, *, lqr):
     """Each controller's OWN trim (the operating point it is calibrated at).
 
-    Mirrors ``_target_pos_d_for_kind``. mechanical / pid_natural operate at
-    the natural trim = the LQR design point (``lqr.trim`` — bit-consistent,
-    single-branch); pid_deeper at the cached pinned solve at its deeper
-    setpoint.
+    Mirrors ``_target_pos_d_for_kind``. mechanical / pid_natural / p_tuned
+    operate at the natural trim = the LQR design point (``lqr.trim`` —
+    bit-consistent, single-branch); pid_deeper at the cached pinned solve at
+    its deeper setpoint.
     """
-    if controller_kind in ("mechanical", "pid_natural"):
+    if controller_kind in ("mechanical", "pid_natural", "p_tuned"):
         return lqr.trim
     if controller_kind == "pid_deeper":
         return _deeper_pinned_trim()
@@ -408,6 +434,17 @@ def _build_controller_for_kind(
     if controller_kind == "pid_natural":
         return create_pid_wand_config(
             lqr, params=MOTH_BIEKER_V3, heel_angle=HEEL_ANGLE, dt=DT,
+            encounter_distance_index=encounter_distance_index,
+            num_states=num_states,
+        )
+    if controller_kind == "p_tuned":
+        # Proportional-only feedback at the natural trim, at a softer gain
+        # than the default PID (Kp=0.4 vs 0.6) with the integrator removed
+        # (Ki=0). Same setpoint and own-trim calibration as pid_natural, so
+        # the only difference from pid_natural is the (Kp, Ki) gains.
+        return create_pid_wand_config(
+            lqr, params=MOTH_BIEKER_V3, heel_angle=HEEL_ANGLE, dt=DT,
+            Kp=P_TUNED_KP, Ki=P_TUNED_KI, Kd=P_TUNED_KD,
             encounter_distance_index=encounter_distance_index,
             num_states=num_states,
         )
@@ -921,6 +958,7 @@ _BOX_FACECOLORS = {
     "mechanical": "#cce5ff",
     "pid_natural": "#ffcccc",
     "pid_deeper": "#ccffcc",
+    "p_tuned": "#ffe0b3",
 }
 
 

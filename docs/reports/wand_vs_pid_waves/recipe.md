@@ -2,12 +2,12 @@
 
 ## Purpose
 
-Compare a passive mechanical wand-to-flap linkage against two wand-only
-PID configurations (natural trim and deeper trim) under SF Bay moderate
-waves. The report is the canonical fmd example of how to organise a
-regeneratable analysis: a recipe + script + agent-readable interpretation
-skill that any user can clone, re-run, and tweak as a starting point for
-their own tuning.
+Compare a passive mechanical wand-to-flap linkage against three wand-only
+feedback configurations (natural-trim PID, deeper-trim PID, and a tuned
+proportional-only controller) under SF Bay moderate waves. The report is
+the canonical fmd example of how to organise a regeneratable analysis: a
+recipe + script + agent-readable interpretation skill that any user can
+clone, re-run, and tweak as a starting point for their own tuning.
 
 ## Prerequisites
 
@@ -29,8 +29,15 @@ their own tuning.
     ventilation threshold (NED-positive-down: `+ 0.30` makes pos_d
     *less* negative = boat rides lower = foil tip more submerged).
     The factory calibrates theta_ref / flap / elevator at the pinned
-    trim of the target depth, so the old ~8 cm "theta-shift" offset no
-    longer exists (it was a speed effect; superseded 2026-07).
+    trim of the target depth, so the calm bias is mm-level at any depth
+    (at equal speed the trim pitch is nearly depth-invariant).
+  - `create_pid_wand_config(Kp=0.4, Ki=0.0, Kd=0.0)` — tuned
+    proportional-only controller at the natural trim. Same wand sensor,
+    inversion, setpoint, and own-trim calibration as the natural-trim
+    PID; the only change is the gains. Kp comes from a paired-seed gain
+    sweep at Ki = 0 on this exact setup (soft side of a shallow tracking
+    plateau); with Ki = 0 it does not chase the wand inversion's
+    wave-rectified height bias, so it tracks well at low flap effort.
 - Thrust: **P speed governor** (`apply_speed_governor`) —
   `F = max(T0 + Kp*(u_target - u), 0)`, Kp = 40 N/(m/s), u_target = 10;
   T0 = pinned-trim thrust at each controller's own setpoint (75.5 N
@@ -152,16 +159,21 @@ The factory solves the pinned trim at `target_pos_d` and calibrates the
 inversion's theta_ref (plus flap/elevator references) there, so the
 controller reaches its setpoint with mm-level calm bias at any depth in
 the wand's range. Pair a non-natural setpoint with the speed governor
-so it also has its thrust equilibrium. The 2026-07 50-seed result:
-breaches 28.4 (deeper) vs 62.8 / 64.0 (natural-setpoint controllers)
-per 50-s window — a ~2.2x margin bought for ~+16 N calm thrust; the
-deeper config also has the best tracking and pitch numbers.
+so it also has its thrust equilibrium. The deeper setpoint's payoff is a
+~2x reduction in foil-tip breaches over a 50-s window, bought with extra
+strut immersion (higher calm thrust); it also has the lowest ride-height
+RMS about its own setpoint. See `report.md` for the exact numbers.
 
 Other things to tune:
 
-- **PID gains**: pass `Kp=, Ki=, Kd=` to `create_pid_wand_config`.
-  Try Kd > 0 only if you first low-pass the wand angle (raw wand
-  signal carries wave-orbital motion → destabilisation through D).
+- **PID gains**: pass `Kp=, Ki=, Kd=` to `create_pid_wand_config`. On a
+  wand-derived (relative) height sensor, a soft proportional-only law
+  (Kp=0.4, Ki=0) tracks better than the default `Kp=0.6, Ki=0.1` and at
+  lower flap effort — the integrator chases the inversion's
+  wave-rectified height bias. This is the `p_tuned` config; the report
+  quantifies the gap. Try Kd > 0 only if you first low-pass the wand
+  angle (raw wand signal carries wave-orbital motion → destabilisation
+  through D).
 - **Wave preset**: swap `WAVE_SF_BAY_MODERATE` for
   `WAVE_SF_BAY_LIGHT` (lighter chop, shorter wavelengths), or
   build your own `WaveParams`.

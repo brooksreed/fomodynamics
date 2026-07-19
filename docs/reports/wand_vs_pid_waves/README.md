@@ -1,9 +1,10 @@
 # wand_vs_pid_waves — canonical fmd example report
 
-Compares a mechanical wand-to-flap linkage against two wand-only PID
-configurations (natural trim and deeper trim) under SF Bay moderate
-waves, with a P speed governor holding boatspeed and each controller
-calibrated at its own pinned trim. This is the canonical
+Compares a mechanical wand-to-flap linkage against three wand-only
+feedback configurations (natural-trim PID, deeper-trim PID, and a tuned
+proportional-only controller) under SF Bay moderate waves, with a P
+speed governor holding boatspeed and each controller calibrated at its
+own pinned trim. This is the canonical
 "recipe + regenerator + interpretation skill" example for the fmd
 package. Use it as a starting point for your own controller tuning
 and wave-condition evaluations.
