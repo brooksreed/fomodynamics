@@ -28,5 +28,6 @@ harness-agnostic — it tells the agent to read the artifacts in this
 folder and produce `report.md` here. No special tooling required;
 any agent that can read files and write markdown can follow it.
 
-For more on the design choices, gains, and what to tune, read
-[`recipe.md`](recipe.md).
+For what the simulation captures (and abstracts away), read
+[`model_setup.md`](model_setup.md). For the design choices, gains, and what
+to tune, read [`recipe.md`](recipe.md).
