@@ -684,8 +684,13 @@ class MothSailForce(JaxForceElement):
         Thrust model priority:
         1. Lookup table (if thrust_speeds/thrust_values non-empty):
            F_sail = interp(u_forward, thrust_speeds, thrust_values)
-        2. Affine: F_sail = thrust_coeff + thrust_slope * u_forward
+        2. Affine: F_sail = max(thrust_coeff + thrust_slope * u_forward, 0)
         3. Constant: when thrust_slope=0, reduces to F_sail = thrust_coeff
+
+        The affine branch is clamped at zero (a sail produces no negative
+        forward thrust); this is what makes ``thrust_slope=-Kp`` a valid P
+        speed-governor law. The table branch is not clamped (all calibrated
+        values are positive) so calibrated trims stay bit-identical.
 
         Moment uses full cross product: M_y = ce_z * F_bx - ce_x * F_bz.
         The sail CE is fixed to the hull, so moment arm uses body-frame force.
@@ -712,7 +717,12 @@ class MothSailForce(JaxForceElement):
         if self.thrust_speeds.shape[0] > 0:
             f_x = jnp.interp(u_forward, self.thrust_speeds, self.thrust_values)
         else:
-            f_x = self.thrust_coeff + self.thrust_slope * u_forward
+            # Affine (incl. speed-governor) mode: a sail cannot pull the boat
+            # backward, so clamp thrust >= 0. Inert for the table branch (all
+            # calibrated values positive) and for constant/positive-slope
+            # presets; only binds a P speed-governor (thrust_slope=-Kp) when u
+            # overspeeds past u_target + thrust_coeff_eff/Kp.
+            f_x = jnp.maximum(self.thrust_coeff + self.thrust_slope * u_forward, 0.0)
 
         # NED→body rotation: thrust is horizontal in NED, rotate by pitch
         force_bx = f_x * jnp.cos(theta)

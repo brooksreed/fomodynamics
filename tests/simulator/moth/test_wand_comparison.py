@@ -218,12 +218,11 @@ class TestWandOnlyEKFConvergence:
         contaminates them through the process-model coupling — a ratio test is
         the wrong shape (fast settle -> small denominator).
 
-        The §4.6 hull-frame wand fix shifts the wand measurement Jacobian's
-        theta-column by -1, which changed the (already marginal) u dead-reckoning
-        so that the full-state error is now u-dominated; the observable states
-        remain small and the true trajectory stays stable and physical. The
-        wand-only u behavior is revisited when the wand study is re-run in
-        Phase 2 (C2). See docs/private/plans/physics_fixes C1.D retro.
+        The hull-frame wand measurement (angle taken in the hull frame, not
+        the world frame) shifts the wand measurement Jacobian's theta-column
+        by -1, which changes the (already marginal) u dead-reckoning so that
+        the full-state error is u-dominated; the observable states remain
+        small and the true trajectory stays stable and physical.
         """
         obs_idx = [0, 1, 2, 3]  # pos_d, theta, w, q (u=4 unobservable)
         est_errors = np.asarray(wand_only_result.estimation_errors)[:, obs_idx]
@@ -475,3 +474,200 @@ class TestMetricsComputation:
             f"Mechanical rms_pos_d {mech['rms_pos_d']:.4f} > "
             f"2x baseline {baseline['rms_pos_d']:.4f} + 0.02 = {limit:.4f}"
         )
+
+
+# ---------------------------------------------------------------------------
+# TestTrimAtSetpoint (per-setpoint controller calibration)
+# ---------------------------------------------------------------------------
+
+from fmd.simulator.components.moth_forces import compute_tip_at_surface_pos_d
+from fmd.simulator.components.moth_wand import (
+    DEFAULT_WAND_LENGTH,
+    wand_angle_from_state,
+)
+from fmd.simulator.moth_scenarios import create_pid_wand_config
+from fmd.simulator.trim_casadi import find_moth_trim
+
+_HEEL_30 = np.deg2rad(30.0)
+
+
+@pytest.fixture(scope="module")
+def deeper_target():
+    """The wand_vs_pid_waves 'pid_deeper' setpoint: tip 30 cm below surface."""
+    return float(compute_tip_at_surface_pos_d() + 0.30)
+
+
+@pytest.fixture(scope="module")
+def deeper_trim(deeper_target):
+    """Pinned trim solved at the deeper setpoint (u=10, 30 deg heel)."""
+    return find_moth_trim(
+        MOTH_BIEKER_V3, u_forward=10.0,
+        target_pos_d=deeper_target, heel_angle=_HEEL_30,
+    )
+
+
+@pytest.fixture(scope="module")
+def pid_deeper_controller(lqr_design, deeper_target, deeper_trim):
+    """PID config at the deeper setpoint, calibrated at its own trim."""
+    _, _, controller = create_pid_wand_config(
+        lqr_design, params=MOTH_BIEKER_V3, heel_angle=_HEEL_30, dt=0.005,
+        target_pos_d=deeper_target, setpoint_trim=deeper_trim,
+    )
+    return controller
+
+
+def _own_trim_wand_angle(pos_d, theta):
+    return float(
+        wand_angle_from_state(
+            pos_d=jnp.array(pos_d), theta=jnp.array(theta),
+            wand_pivot_position=jnp.asarray(MOTH_BIEKER_V3.wand_pivot_position),
+            wand_length=DEFAULT_WAND_LENGTH, heel_angle=_HEEL_30,
+        )
+    )
+
+
+class TestTrimAtSetpoint:
+    """Per-setpoint calibration locks.
+
+    Each controller must be calibrated at its OWN pinned trim, its
+    setpoint an exact calm equilibrium by construction. These are the
+    round-trip trim-identity tests for that calibration.
+    """
+
+    def test_pid_deeper_calibrated_at_own_trim(
+        self, pid_deeper_controller, deeper_trim
+    ):
+        """theta_ref / flap_trim / elevator_trim come from the deeper pinned
+        trim, not the natural trim (guards against calibrating a non-natural
+        setpoint at the natural trim)."""
+        c = pid_deeper_controller
+        np.testing.assert_allclose(
+            float(c.theta_ref), float(deeper_trim.state[1]), atol=1e-12
+        )
+        np.testing.assert_allclose(
+            float(c.flap_trim), float(deeper_trim.control[0]), atol=1e-12
+        )
+        np.testing.assert_allclose(
+            float(c.elevator_trim), float(deeper_trim.control[1]), atol=1e-12
+        )
+        np.testing.assert_allclose(
+            float(c.pos_d_target), float(deeper_trim.state[0]), atol=1e-12
+        )
+
+    def test_round_trip_identity_natural(self, lqr_design):
+        """estimate_pos_d(wand_angle_from_state(setpoint, own theta)) ==
+        setpoint at the natural trim."""
+        _, _, c = create_pid_wand_config(
+            lqr_design, params=MOTH_BIEKER_V3, heel_angle=_HEEL_30, dt=0.005,
+        )
+        wa = _own_trim_wand_angle(lqr_design.trim.state[0], float(c.theta_ref))
+        np.testing.assert_allclose(
+            float(c.estimate_pos_d(jnp.array(wa))),
+            float(c.pos_d_target), atol=1e-9,
+        )
+
+    def test_round_trip_identity_deeper(
+        self, pid_deeper_controller, deeper_target
+    ):
+        """Same identity at the deeper setpoint — the Option D lock."""
+        c = pid_deeper_controller
+        wa = _own_trim_wand_angle(deeper_target, float(c.theta_ref))
+        np.testing.assert_allclose(
+            float(c.estimate_pos_d(jnp.array(wa))), deeper_target, atol=1e-9,
+        )
+
+    def test_pid_zero_error_identity_at_own_trim(
+        self, pid_deeper_controller, deeper_trim, deeper_target
+    ):
+        """At its own trim the PID outputs exactly its own trim control
+        (height_err = 0 -> flap = own flap_trim, elevator = own trim):
+        the setpoint trim is a calm equilibrium by construction."""
+        c = pid_deeper_controller
+        wa = _own_trim_wand_angle(deeper_target, float(c.theta_ref))
+        u, _ = c.control(jnp.zeros(5).at[0].set(wa), 0.0, c.init_controller_state())
+        np.testing.assert_allclose(
+            float(u[0]), float(deeper_trim.control[0]), atol=1e-9
+        )
+        np.testing.assert_allclose(
+            float(u[1]), float(deeper_trim.control[1]), atol=1e-9
+        )
+
+    def test_pid_natural_calibration_unchanged(self, lqr_design):
+        """target_pos_d=None keeps the natural-trim calibration (regression:
+        the natural-setpoint controllers must not move when the per-setpoint
+        calibration path is present but unused)."""
+        _, _, c = create_pid_wand_config(
+            lqr_design, params=MOTH_BIEKER_V3, heel_angle=_HEEL_30, dt=0.005,
+        )
+        np.testing.assert_allclose(
+            float(c.theta_ref), float(lqr_design.trim.state[1]), atol=1e-12
+        )
+        np.testing.assert_allclose(
+            float(c.flap_trim), float(lqr_design.trim.control[0]), atol=1e-12
+        )
+        np.testing.assert_allclose(
+            float(c.elevator_trim), float(lqr_design.trim.control[1]), atol=1e-12
+        )
+        np.testing.assert_allclose(
+            float(c.pos_d_target), float(lqr_design.trim.state[0]), atol=1e-12
+        )
+
+    def test_internal_solve_matches_passthrough(
+        self, lqr_design, deeper_target, pid_deeper_controller
+    ):
+        """Omitting setpoint_trim solves the same pinned trim internally
+        (bit-consistent with the passthrough path)."""
+        _, _, c_internal = create_pid_wand_config(
+            lqr_design, params=MOTH_BIEKER_V3, heel_angle=_HEEL_30, dt=0.005,
+            target_pos_d=deeper_target,
+        )
+        c = pid_deeper_controller
+        np.testing.assert_allclose(
+            float(c_internal.theta_ref), float(c.theta_ref), atol=1e-12
+        )
+        np.testing.assert_allclose(
+            float(c_internal.flap_trim), float(c.flap_trim), atol=1e-12
+        )
+        np.testing.assert_allclose(
+            float(c_internal.wand_angle_offset), float(c.wand_angle_offset),
+            atol=1e-12,
+        )
+
+    def test_setpoint_trim_mismatch_raises(self, lqr_design, deeper_target):
+        """A setpoint_trim pinned elsewhere than target_pos_d fails loud."""
+        with pytest.raises(ValueError, match="does not match"):
+            create_pid_wand_config(
+                lqr_design, params=MOTH_BIEKER_V3, heel_angle=_HEEL_30,
+                dt=0.005, target_pos_d=deeper_target,
+                setpoint_trim=lqr_design.trim,  # pinned at natural, not target
+            )
+
+    def test_setpoint_trim_without_target_raises(self, lqr_design, deeper_trim):
+        """setpoint_trim without target_pos_d is a caller error."""
+        with pytest.raises(ValueError, match="without target_pos_d"):
+            create_pid_wand_config(
+                lqr_design, params=MOTH_BIEKER_V3, heel_angle=_HEEL_30,
+                dt=0.005, setpoint_trim=deeper_trim,
+            )
+
+    def test_mechanical_static_identity(self, lqr_design):
+        """Auto-tuned linkage outputs exactly the trim flap at the trim wand
+        angle — the natural trim is an equilibrium of the passive loop."""
+        _, _, mech = create_mechanical_wand_config(
+            lqr_design, params=MOTH_BIEKER_V3, heel_angle=_HEEL_30,
+        )
+        wa = _own_trim_wand_angle(
+            lqr_design.trim.state[0], lqr_design.trim.state[1]
+        )
+        np.testing.assert_allclose(
+            float(mech.linkage.compute(jnp.array(wa))),
+            float(lqr_design.trim.control[0]), atol=1e-9,
+        )
+
+    def test_mechanical_explicit_offset_respected(self, lqr_design):
+        """linkage_overrides={'pullrod_offset': ...} bypasses the auto-tune."""
+        _, _, mech = create_mechanical_wand_config(
+            lqr_design, params=MOTH_BIEKER_V3, heel_angle=_HEEL_30,
+            linkage_overrides={"pullrod_offset": 0.005},
+        )
+        np.testing.assert_allclose(mech.linkage.pullrod_offset, 0.005, atol=0.0)

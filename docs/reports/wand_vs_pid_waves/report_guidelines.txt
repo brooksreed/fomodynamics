@@ -1,0 +1,114 @@
+## Physics Guidance for wand_vs_pid_waves Report
+
+### NED Frame Convention
+- pos_d is positive DOWN in NED. A pos_d that becomes MORE NEGATIVE means
+  the boat is RISING (climbing above the still-water reference). The
+  natural trim pos_d is recorded in metrics.json setup.trim_state
+  (about -1.40 m for MOTH_BIEKER_V3 at 10 m/s — the boat flying that
+  distance above the surface, on its main foil).
+- A breach event is when the leeward foil tip emerges above the water
+  surface (tip_depth < 0). The Monte Carlo breach metric is WAVE-AWARE
+  (tip depth vs the instantaneous wave surface at the foil's integrated
+  encounter position); the single-seed dashboard tip-depth panel is
+  still-water-referenced. Do not mix the two.
+
+### What this report compares
+Four controllers, each calibrated and initialized at its OWN pinned
+trim, under a P speed governor (F = max(T0 + Kp*(u_target - u), 0);
+T0 = pinned-trim thrust at each controller's setpoint):
+- ``mechanical``: WandSensor + PassthroughEstimator +
+  MechanicalWandController. The wand-to-flap conversion is a pure
+  trig/lever linkage (``WandLinkage``). Fast (no sensor lag, no
+  controller dynamics), fixed gain, zero integrator; its pullrod
+  offset is auto-tuned closed-form so the trim is its exact calm
+  equilibrium.
+- ``pid_natural``: WandSensor + PassthroughEstimator + PIDController
+  at the natural trim setpoint, default gains (Kp=0.6, Ki=0.1, Kd=0).
+  The wand angle is inverted to a closed-form ride-height estimate
+  (theta_ref = trim pitch) and fed through PID on height error. The
+  integrator drives zero steady-state offset under a constant bias.
+- ``pid_deeper``: same PID (default gains) with target_pos_d 30 cm
+  below the foil-tip ventilation threshold, calibrated at the pinned
+  trim of ITS OWN setpoint (theta_ref, flap, elevator, thrust T0 all
+  re-solved there).
+- ``p_tuned``: same wand sensor/inversion as pid_natural, same natural
+  setpoint and own-trim calibration, but proportional-only at a softer
+  gain (Kp=0.4, Ki=0, Kd=0). Isolates the effect of removing the
+  integrator on a relative (wand-derived) height sensor: the ONLY
+  difference from pid_natural is the (Kp, Ki) gains.
+
+### Expected qualitative differences (mechanisms, not conclusions)
+- Breach count is dominated by the SETPOINT, not the control law: the
+  three natural-setpoint controllers (mechanical, pid_natural,
+  p_tuned) should breach at statistically similar rates (roughly once
+  per wave encounter at Hs=0.5 m); pid_deeper, with its foil tip well
+  below the surface, should breach markedly less.
+- On a RELATIVE (wand-derived) height sensor the wand inversion's
+  height estimate is biased under waves (theta != theta_ref aliasing +
+  rectification). An integrator (pid_natural) then servoes the true
+  height toward that wave-rectified estimate, which is expected to COST
+  wave-band tracking RMS rather than help it — so p_tuned (no
+  integrator) should track ~= or BETTER than pid_natural, and at a soft
+  Kp should track ~= or better than the mechanical linkage at markedly
+  LOWER flap effort (fewer saturation events). pid_deeper should track
+  its own setpoint best (foil deep -> lift insensitive to surface
+  proximity).
+- Mechanical should have the HIGHEST flap activity, saturation
+  fraction, and added resistance (wave-orbital wand motion passes
+  straight through the linkage); the softest controller (p_tuned)
+  should have the lowest.
+- All controllers should be stationary (stationarity_pass_fraction =
+  1.0) with the governor unsaturated; mean-u offsets are the P-droop
+  ΔT/Kp, well under 0.3 m/s.
+- All should stay foiling on average (mean foil tip depth > 0 over
+  the steady-state window).
+
+### NED-sign pitfalls
+- "Lower ride-height RMS" means a smaller std of pos_d about the
+  setpoint — it does NOT mean pos_d is more negative.
+- A breach happens when tip_depth crosses ZERO going negative.
+  ``breach_count`` is the number of zero-crossings into negative;
+  ``breach_fraction`` is the fraction of time the tip is exposed.
+- Mean depth factor near 1.0 means the foil is essentially fully
+  submerged (it is the force model's effective submerged-span
+  fraction, time-averaged).
+
+### Metric reference frames (state these in the report)
+- ride_height_rms: error vs the NATURAL trim for all controllers
+  (setpoint-offset dominated for pid_deeper — not a cross-setpoint
+  metric). ride_height_rms_around_target: error vs the controller's
+  OWN setpoint — use this one to compare tracking.
+- flap_rms: deviation from the controller's OWN trim flap.
+- pitch_rms_error / speed_loss_mean: vs the natural trim, for all
+  controllers, for cross-controller comparability.
+- added_resistance_mean equals Kp*mean_u_offset ALGEBRAICALLY when
+  the governor never saturates — it is the same measurement as the
+  speed columns in newtons, NOT an independent cross-check.
+
+### What to flag (do NOT silently accept)
+- Any controller whose ride_height_mean sits more than ~3 cm from its
+  own target (calm calibration is mm-exact by construction; only
+  cm-level wave rectification is expected).
+- Any seed with stationarity_passed = 0, or a nonzero governor
+  saturation fraction.
+- pid_deeper breach_count >= any natural-setpoint controller, or a
+  LARGE breach gap among mechanical / pid_natural / p_tuned (they
+  share a setpoint and should be close).
+- If mean foil tip depth < 0, controllers are flying off the foil on
+  average — the wave amplitude is too large for the wand envelope.
+- Asymmetric saturation (flap pinned to one limit) indicates a
+  steady bias the integrator cannot recover from within the
+  saturation envelope.
+
+### Report structure (follow interpretation_skill.md for full detail)
+1. Flagged findings, then Summary: lead with breach counts and
+   RMS-around-target.
+2. Setup: trim state, setpoint trims, governor, wave preset, gains.
+3. Single-seed time series (seed=0): pos_d, theta, u, flap, tip depth.
+4. Monte Carlo (50 seeds): box/strip plots of RMS, breach count,
+   flap activity, pitch/speed; surge PSD band separation.
+   Use metrics.json for exact numbers.
+5. Mechanism: what sets breach counts (setpoint geometry); what each
+   controller pays in added resistance; where saturation happens.
+6. Tuning suggestions: setpoint sweep (margin vs drag), gains on the
+   governed plant, wave presets.

@@ -696,7 +696,7 @@ class TestMoth3DExtendedRegimeEquivalence:
 
 
 class TestMoth3DFreeSurfaceLiftEquivalence:
-    """C1.F: parity for the FSL knobs (enable_free_surface_lift,
+    """Parity for the free-surface-lift knobs (enable_free_surface_lift,
     ventilation_sharpness) in both settings.
 
     The default-ON case is covered by every test above; these lock the
@@ -769,3 +769,98 @@ class TestMoth3DFreeSurfaceLiftEquivalence:
         d_on = np.array(jax_on.forward_dynamics(x, u))
         d_off = np.array(jax_off.forward_dynamics(x, u))
         assert abs(d_on[2] - d_off[2]) > 1e-3
+
+
+class TestMoth3DSpeedGovernorEquivalence:
+    """Parity for the affine speed-governor sail (empty thrust table,
+    thrust_slope = -Kp), including the F_sail >= 0 clamp.
+
+    The default MOTH_BIEKER_V3 uses the calibrated thrust *table*, so the
+    affine branch — and its max(.,0) clamp — is never exercised by the
+    tests above. This locks the JAX and CasADi affine branches in lockstep,
+    driving u past the governor's zero-thrust kink so the clamp actually
+    binds in both mirrors.
+    """
+
+    # Governor: F_sail = T0 + Kp*(u_target - u); here T0=75.5 N at u_target=10,
+    # Kp=40 => zero-thrust kink at u = 10 + 75.5/40 ~= 11.9 m/s.
+    KP = 40.0
+    U_TARGET = 10.0
+    T0 = 75.5
+
+    def _governor_params(self):
+        import attrs
+        coeff = self.T0 + self.KP * self.U_TARGET   # thrust_coeff = T0 + Kp*u_target
+        return attrs.evolve(
+            MOTH_BIEKER_V3,
+            sail_thrust_speeds=(),      # empty table -> affine branch
+            sail_thrust_values=(),
+            sail_thrust_coeff=coeff,
+            sail_thrust_slope=-self.KP,
+        )
+
+    def _pair(self):
+        params = self._governor_params()
+        jax_model = Moth3D(
+            params,
+            u_forward=ConstantSchedule(U_FORWARD),
+            heel_angle=HEEL_ANGLE,
+            ventilation_mode=VENTILATION_MODE,
+            ventilation_threshold=VENTILATION_THRESHOLD,
+            surge_enabled=True,
+        )
+        casadi_model = Moth3DCasadiExact(
+            params,
+            heel_angle=HEEL_ANGLE,
+            ventilation_mode=VENTILATION_MODE,
+            ventilation_threshold=VENTILATION_THRESHOLD,
+            surge_enabled=True,
+            u_forward=U_FORWARD,
+        )
+        return jax_model, casadi_model
+
+    def test_level0_governor_including_clamp(self, rng):
+        """Derivative parity across a u band that straddles the zero-thrust
+        kink (~11.9 m/s), so the clamp binds for the higher-u samples in
+        both mirrors identically."""
+        jax_model, casadi_model = self._pair()
+        f = casadi_model.dynamics_function()
+
+        for _ in range(120):
+            x = np.array([
+                rng.uniform(-1.5, -0.5),
+                rng.uniform(-0.2, 0.2),
+                rng.uniform(-1, 1),
+                rng.uniform(-1, 1),
+                rng.uniform(8, 16),         # straddles the 11.9 m/s kink
+            ])
+            u = np.array([
+                rng.uniform(-0.17, 0.26),
+                rng.uniform(-0.05, 0.10),
+            ])
+
+            jax_deriv = np.array(jax_model.forward_dynamics(jnp.array(x), jnp.array(u)))
+            casadi_deriv = np.array(f(x, u)).flatten()
+
+            np.testing.assert_allclose(
+                casadi_deriv, jax_deriv, rtol=DERIV_RTOL, atol=DERIV_ATOL,
+                err_msg=f"Governor parity mismatch at state: {x}",
+            )
+
+    def test_clamp_binds_above_kink(self):
+        """Sanity: the clamp is live — above the kink the sail force is
+        exactly zero (not negative) in both mirrors, and positive below."""
+        from fmd.simulator.components.moth_forces import MothSailForce
+
+        sail = MothSailForce(
+            thrust_coeff=self.T0 + self.KP * self.U_TARGET,
+            thrust_slope=-self.KP,
+        )
+        state = jnp.array([-1.3, 0.0, 0.0, 0.0, 10.0])
+        control = jnp.array([0.0, 0.0])
+        # Below the kink: positive thrust equal to the affine value.
+        f_below, _ = sail.compute_moth(state, control, u_forward=10.0)
+        assert float(f_below[0]) == pytest.approx(self.T0, abs=1e-6)  # T0 at u_target
+        # Above the kink (u=15 > 11.9): affine value negative -> clamped to 0.
+        f_above, _ = sail.compute_moth(state, control, u_forward=15.0)
+        assert float(f_above[0]) == pytest.approx(0.0, abs=1e-9)
